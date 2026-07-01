@@ -42,6 +42,10 @@ npm run dev
 # 页面访问 http://localhost:5173
 ```
 
+## 生产部署
+
+将项目部署到 Ubuntu 22.04 服务器（Nginx + systemd + HTTPS）请参考 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)。
+
 ## API Key 获取
 
 | 服务 | 控制台地址 |
