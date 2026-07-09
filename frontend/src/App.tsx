@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Video, FileText, Package, Download, ChevronRight } from 'lucide-react'
-import type { ProductInfo, ScriptResult, VideoTask } from './types'
+import type { ProductInfo, ScriptResult, VideoTask, BatchVideoTask } from './types'
 import Step1Product from './pages/Step1Product'
 import Step2Script from './pages/Step2Script'
 import Step3Video from './pages/Step3Video'
@@ -18,6 +18,7 @@ export default function App() {
   const [product, setProduct] = useState<ProductInfo | null>(null)
   const [script, setScript] = useState<ScriptResult | null>(null)
   const [videoTask, setVideoTask] = useState<VideoTask | null>(null)
+  const [batchTask, setBatchTask] = useState<BatchVideoTask | null>(null)
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-blue-50">
@@ -87,20 +88,28 @@ export default function App() {
           <Step3Video
             script={script}
             onBack={() => setStep(1)}
-            onNext={(t) => {
-              setVideoTask(t)
+            onNext={(t, batchT) => {
+              if (batchT) {
+                setBatchTask(batchT)
+                setVideoTask(null)
+              } else {
+                setVideoTask(t)
+                setBatchTask(null)
+              }
               setStep(3)
             }}
           />
         )}
-        {step === 3 && videoTask && (
+        {step === 3 && (videoTask || batchTask) && (
           <Step4Download
             task={videoTask}
+            batchTask={batchTask}
             onRestart={() => {
               setStep(0)
               setProduct(null)
               setScript(null)
               setVideoTask(null)
+              setBatchTask(null)
             }}
           />
         )}
