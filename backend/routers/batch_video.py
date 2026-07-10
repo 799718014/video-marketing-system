@@ -219,10 +219,18 @@ async def download_merged_video(batch_id: str):
 async def retry_segments(batch_id: str, background_tasks: BackgroundTasks):
     """
     重试所有失败的片段
+
+    Args:
+        batch_id: 批量任务 ID
+        background_tasks: 后台任务管理器
+
+    Returns:
+        更新后的任务对象
+
+    Raises:
+        HTTPException: 任务不存在或状态不支持重试
     """
     task = get_batch_task(batch_id)
-    if not task:
-        raise HTTPException(status_code=404, detail="任务不存在")
 
     if task.status not in ["processing", "failed"]:
         raise HTTPException(status_code=400, detail="当前状态不支持重试")
@@ -230,6 +238,7 @@ async def retry_segments(batch_id: str, background_tasks: BackgroundTasks):
     # 启动重试任务
     background_tasks.add_task(batch_video_service.retry_failed_segments, batch_id)
 
+    logger.info(f"启动重试任务: {batch_id}")
     return task
 
 
@@ -320,19 +329,3 @@ def get_batch_task(batch_id: str) -> BatchVideoTask:
         raise HTTPException(status_code=404, detail="任务不存在")
     return task
 
-
-# 重试接口修正
-@router.post("/retry/{batch_id}", response_model=BatchVideoTask)
-async def retry_segments_fixed(batch_id: str, background_tasks: BackgroundTasks):
-    """
-    重试所有失败的片段
-    """
-    task = get_batch_task(batch_id)
-
-    if task.status not in ["processing", "failed"]:
-        raise HTTPException(status_code=400, detail="当前状态不支持重试")
-
-    # 启动重试任务
-    background_tasks.add_task(batch_video_service.retry_failed_segments, batch_id)
-
-    return task
