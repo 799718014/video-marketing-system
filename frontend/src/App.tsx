@@ -1,10 +1,12 @@
 import { useState } from 'react'
-import { Video, FileText, Package, Download, ChevronRight } from 'lucide-react'
+import { Video, FileText, Package, Download, ChevronRight, Clock, LayoutTemplate } from 'lucide-react'
 import type { ProductInfo, ScriptResult, VideoTask, BatchVideoTask } from './types'
 import Step1Product from './pages/Step1Product'
 import Step2Script from './pages/Step2Script'
 import Step3Video from './pages/Step3Video'
 import Step4Download from './pages/Step4Download'
+import History from './pages/History'
+import TemplateLibrary from './pages/TemplateLibrary'
 
 const STEPS = [
   { label: '商品信息', icon: Package },
@@ -13,7 +15,10 @@ const STEPS = [
   { label: '下载发布', icon: Download },
 ]
 
+type Page = 'generator' | 'history' | 'template'
+
 export default function App() {
+  const [page, setPage] = useState<Page>('generator')
   const [step, setStep] = useState(0)
   const [product, setProduct] = useState<ProductInfo | null>(null)
   const [script, setScript] = useState<ScriptResult | null>(null)
@@ -23,47 +28,89 @@ export default function App() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-blue-50">
       <header className="bg-white border-b border-gray-100 shadow-sm">
-        <div className="max-w-5xl mx-auto px-6 py-4 flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-brand-500 flex items-center justify-center">
-            <Video size={18} className="text-white" />
+        <div className="max-w-5xl mx-auto px-6 py-4 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-lg bg-brand-500 flex items-center justify-center">
+              <Video size={18} className="text-white" />
+            </div>
+            <h1 className="text-lg font-semibold text-gray-900">商品宣传视频生成系统</h1>
           </div>
-          <h1 className="text-lg font-semibold text-gray-900">商品宣传视频生成系统</h1>
+          <nav className="flex gap-2">
+            <button
+              onClick={() => setPage('generator')}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                page === 'generator'
+                  ? 'bg-brand-500 text-white'
+                  : 'text-gray-600 hover:bg-gray-100'
+              }`}
+            >
+              视频生成
+            </button>
+            <button
+              onClick={() => setPage('history')}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 ${
+                page === 'history'
+                  ? 'bg-brand-500 text-white'
+                  : 'text-gray-600 hover:bg-gray-100'
+              }`}
+            >
+              <Clock size={16} />
+              历史记录
+            </button>
+            <button
+              onClick={() => setPage('template')}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 ${
+                page === 'template'
+                  ? 'bg-brand-500 text-white'
+                  : 'text-gray-600 hover:bg-gray-100'
+              }`}
+            >
+              <LayoutTemplate size={16} />
+              模板库
+            </button>
+          </nav>
         </div>
       </header>
 
-      <main className="max-w-5xl mx-auto px-6 py-8">
-        {/* Stepper */}
-        <div className="flex items-center justify-center mb-10">
-          {STEPS.map((s, i) => {
-            const Icon = s.icon
-            const done = i < step
-            const active = i === step
-            return (
-              <div key={i} className="flex items-center">
-                <div className="flex flex-col items-center gap-1.5">
-                  <div
-                    className={`w-10 h-10 rounded-full flex items-center justify-center transition-all
-                      ${done ? 'bg-brand-500 text-white' : active ? 'bg-brand-500 text-white ring-4 ring-brand-100' : 'bg-gray-100 text-gray-400'}`}
-                  >
-                    <Icon size={18} />
+      <main>
+        {page === 'history' ? (
+          <History />
+        ) : page === 'template' ? (
+          <TemplateLibrary />
+        ) : (
+          <div className="max-w-5xl mx-auto px-6 py-8">
+            {/* Stepper */}
+            <div className="flex items-center justify-center mb-10">
+              {STEPS.map((s, i) => {
+                const Icon = s.icon
+                const done = i < step
+                const active = i === step
+                return (
+                  <div key={i} className="flex items-center">
+                    <div className="flex flex-col items-center gap-1.5">
+                      <div
+                        className={`w-10 h-10 rounded-full flex items-center justify-center transition-all
+                          ${done ? 'bg-brand-500 text-white' : active ? 'bg-brand-500 text-white ring-4 ring-brand-100' : 'bg-gray-100 text-gray-400'}`}
+                      >
+                        <Icon size={18} />
+                      </div>
+                      <span
+                        className={`text-xs font-medium whitespace-nowrap
+                          ${active ? 'text-brand-600' : done ? 'text-gray-600' : 'text-gray-400'}`}
+                      >
+                        {s.label}
+                      </span>
+                    </div>
+                    {i < STEPS.length - 1 && (
+                      <ChevronRight
+                        size={20}
+                        className={`mx-3 mb-5 ${i < step ? 'text-brand-400' : 'text-gray-200'}`}
+                      />
+                    )}
                   </div>
-                  <span
-                    className={`text-xs font-medium whitespace-nowrap
-                      ${active ? 'text-brand-600' : done ? 'text-gray-600' : 'text-gray-400'}`}
-                  >
-                    {s.label}
-                  </span>
-                </div>
-                {i < STEPS.length - 1 && (
-                  <ChevronRight
-                    size={20}
-                    className={`mx-3 mb-5 ${i < step ? 'text-brand-400' : 'text-gray-200'}`}
-                  />
-                )}
-              </div>
-            )
-          })}
-        </div>
+                )
+              })}
+            </div>
 
         {/* Step Content */}
         {step === 0 && (
@@ -112,6 +159,8 @@ export default function App() {
               setBatchTask(null)
             }}
           />
+        )}
+          </div>
         )}
       </main>
     </div>

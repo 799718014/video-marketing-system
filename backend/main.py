@@ -12,7 +12,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 
-from routers import script, video, batch_video
+from routers import script, video, batch_video, history, template
 
 app = FastAPI(title="商品宣传视频生成系统", version="1.0.0")
 
@@ -29,6 +29,8 @@ app.add_middleware(
 app.include_router(script.router, prefix="/api/script", tags=["视频脚本"])
 app.include_router(video.router, prefix="/api/video", tags=["视频生成"])
 app.include_router(batch_video.router, prefix="/api/batch-video", tags=["批量视频"])
+app.include_router(history.router, prefix="/api/history", tags=["历史记录"])
+app.include_router(template.router, prefix="/api/template", tags=["模板库"])
 
 
 @app.get("/api/health")

@@ -68,6 +68,54 @@ export interface BatchVideoTask {
   error?: string
 }
 
+// ========== 历史记录相关类型 ==========
+
+export interface ScriptHistory {
+  id: number
+  title: string
+  product_name: string
+  brand: string | null
+  keywords: string[]
+  style: string
+  duration: number
+  platform: string
+  created_at: string
+  is_favorite: boolean
+}
+
+export interface ScriptHistoryDetail extends ScriptHistory {
+  script_data: ScriptResult
+}
+
+export interface HistoryStats {
+  total: number
+  favorite_count: number
+  style_stats: Record<string, number>
+  platform_stats: Record<string, number>
+}
+
+// ========== 模板库相关类型 ==========
+
+export interface Template {
+  id: number
+  name: string
+  category: string
+  description: string
+  product_name: string
+  keywords: string[]
+  style: string
+  duration: number
+  platform: string
+  is_system: boolean
+  created_by: string | null
+  created_at: string
+  usage_count: number
+}
+
+export interface TemplateDetail extends Template {
+  script_data: ScriptResult
+}
+
 export type VideoStyle = '活力' | '专业' | '温情' | '搞笑'
 export type VideoDuration = 15 | 30 | 60
 export type AspectRatio = '9:16' | '16:9' | '1:1'
