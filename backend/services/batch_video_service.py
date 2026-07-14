@@ -4,7 +4,7 @@ import asyncio
 import logging
 from typing import List, Dict, Optional
 from models.schemas import (
-    ScriptResult, ScriptScene, VideoSegment, BatchVideoTask
+    ScriptResult, ScriptScene, VideoSegment, BatchVideoTask, VideoCreateRequest
 )
 from services import keling_service
 
@@ -125,13 +125,15 @@ async def generate_single_segment(
             segment.status = "processing"
 
             # 调用可灵 API
-            keling_task = await keling_service.create_text2video({
-                "prompt": segment.prompt,
-                "model": params["model"],
-                "duration": int(segment.duration),
-                "aspect_ratio": params["aspect_ratio"],
-                "cfg_scale": params["cfg_scale"],
-            })
+            keling_task = await keling_service.create_text2video(
+                VideoCreateRequest(
+                    prompt=segment.prompt,
+                    model=params["model"],
+                    duration=int(segment.duration),
+                    aspect_ratio=params["aspect_ratio"],
+                    cfg_scale=params["cfg_scale"],
+                )
+            )
 
             segment.keling_task_id = keling_task.task_id
             logger.info(f"片段 {segment.segment_no} 任务创建成功: {keling_task.task_id}")

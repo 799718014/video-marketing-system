@@ -5,7 +5,7 @@ from models.schemas import VideoCreateRequest, VideoTask, Image2VideoCreateReque
 
 logger = logging.getLogger(__name__)
 
-KELING_API_BASE = "https://api.klingai.com"
+KELING_API_BASE = "https://api-beijing.klingai.com"
 
 
 def _get_bearer_token() -> str:
@@ -16,6 +16,8 @@ def _get_bearer_token() -> str:
     api_key = os.getenv("KELING_API_KEY", "")
     if not api_key:
         raise RuntimeError("KELING_API_KEY 未配置，请在 .env 中设置")
+    # 调试日志：检查Key是否正确加载（只打印前缀和长度，隐藏敏感信息）
+    logger.info(f"KELING_API_KEY loaded: prefix={api_key[:15]}... length={len(api_key)}")
     return api_key
 
 
