@@ -811,7 +811,7 @@ class Database:
                             'scene_no': 3,
                             'duration': 8,
                             'visual': '日常使用场景，自然的光线',
-                            'narration：' '它不仅好用，还让我的生活更有仪式感',
+                            'narration': '它不仅好用，还让我的生活更有仪式感',
                             'subtitle': '仪式感'
                         },
                         {
@@ -824,7 +824,7 @@ class Database:
                         {
                             'scene_no': 5,
                             'duration': 4,
-                            'visual': '温柔的结尾画面，品牌logo',
+                            'visual': '温柔的结尾画面,品牌logo',
                             'narration': '评论区告诉我你最喜欢它哪里',
                             'subtitle': '等你分享'
                         }
@@ -859,7 +859,7 @@ class Database:
                             'scene_no': 2,
                             'duration': 15,
                             'visual': '生产车间或办公环境，展现专业实力',
-                            'narration：' '每一道工序都经过严格把控，确保产品品质',
+                            'narration': '每一道工序都经过严格把控，确保产品品质',
                             'subtitle': '专业制造'
                         },
                         {
