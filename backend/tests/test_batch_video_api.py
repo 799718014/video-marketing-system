@@ -6,9 +6,10 @@
 2. GET /api/batch-video/status/{batch_id} - 查询任务状态
 3. GET /api/batch-video/download/{batch_id} - 下载拼接视频
 4. POST /api/batch-video/retry/{batch_id} - 重试失败片段
-5. POST /api/batch-video/cancel/{batch_id} - 取消任务
-6. GET /api/batch-video/segment/{batch_id}/{segment_no} - 下载单个片段
-7. GET /api/batch-video/check-merge/{batch_id} - 检查合并状态
+5. POST /api/batch-video/retry-segment/{batch_id}/{segment_no} - 重新生成单个片段
+6. POST /api/batch-video/cancel/{batch_id} - 取消任务
+7. GET /api/batch-video/segment/{batch_id}/{segment_no} - 下载单个片段
+8. GET /api/batch-video/check-merge/{batch_id} - 检查合并状态
 """
 import pytest
 from fastapi.testclient import TestClient
@@ -553,7 +554,162 @@ class TestParameterValidation:
         assert len(data["segments"]) == 0
 
 
-# ==================== 测试 8: 并发测试 ====================
+# ==================== 测试 8: 重新生成单个片段 ====================
+
+class TestRetrySingleSegment:
+    """测试重新生成单个片段 API"""
+
+    @patch('routers.batch_video.batch_video_service.retry_single_segment')
+    def test_retry_single_failed_segment(self, mock_retry):
+        """测试重新生成失败的片段"""
+        # 创建包含失败片段的任务
+        task = BatchVideoTask(
+            batch_id="retry_single_test",
+            script=ScriptResult(
+                title="测试",
+                total_duration=15,
+                style="活力",
+                scenes=[],
+                full_prompt="test"
+            ),
+            video_params={
+                "model": "kling-v1-5",
+                "aspect_ratio": "9:16",
+                "cfg_scale": 0.5,
+                "max_concurrent": 3
+            },
+            segments=[
+                VideoSegment(
+                    segment_id="seg_1",
+                    segment_no=1,
+                    scene_index=0,
+                    duration=5.0,
+                    prompt="测试1",
+                    status="succeed",
+                    video_url="http://example.com/vid1.mp4"
+                ),
+                VideoSegment(
+                    segment_id="seg_2",
+                    segment_no=2,
+                    scene_index=0,
+                    duration=5.0,
+                    prompt="测试2",
+                    status="failed",
+                    error="生成失败"
+                ),
+                VideoSegment(
+                    segment_id="seg_3",
+                    segment_no=3,
+                    scene_index=0,
+                    duration=5.0,
+                    prompt="测试3",
+                    status="succeed",
+                    video_url="http://example.com/vid3.mp4"
+                ),
+            ],
+            status="failed",
+            total_duration=15.0,
+            created_at=time.time()
+        )
+
+        batch_video_service.save_batch_task(task)
+
+        # 重新生成第2个失败的片段
+        response = client.post(f"/api/batch-video/retry-segment/{task.batch_id}/2")
+
+        assert response.status_code == 200
+        mock_retry.assert_called_once_with(task.batch_id, 2)
+
+    @patch('routers.batch_video.batch_video_service.retry_single_segment')
+    def test_retry_single_succeed_segment(self, mock_retry):
+        """测试重新生成成功的片段（不满意可重新生成）"""
+        task = BatchVideoTask(
+            batch_id="retry_succeed_test",
+            script=ScriptResult(
+                title="测试",
+                total_duration=10,
+                style="活力",
+                scenes=[],
+                full_prompt="test"
+            ),
+            video_params={},
+            segments=[
+                VideoSegment(
+                    segment_id="seg_1",
+                    segment_no=1,
+                    scene_index=0,
+                    duration=5.0,
+                    prompt="测试",
+                    status="succeed",
+                    video_url="http://example.com/vid.mp4"
+                ),
+            ],
+            status="succeed",
+            total_duration=5.0,
+            created_at=time.time()
+        )
+
+        batch_video_service.save_batch_task(task)
+
+        # 重新生成成功的片段
+        response = client.post(f"/api/batch-video/retry-segment/{task.batch_id}/1")
+
+        assert response.status_code == 200
+        mock_retry.assert_called_once_with(task.batch_id, 1)
+
+    def test_retry_single_segment_processing(self):
+        """测试不能重新生成正在处理的片段"""
+        task = BatchVideoTask(
+            batch_id="processing_test",
+            script=ScriptResult(
+                title="测试",
+                total_duration=10,
+                style="活力",
+                scenes=[],
+                full_prompt="test"
+            ),
+            video_params={},
+            segments=[
+                VideoSegment(
+                    segment_id="seg_1",
+                    segment_no=1,
+                    scene_index=0,
+                    duration=5.0,
+                    prompt="测试",
+                    status="processing"
+                ),
+            ],
+            status="processing",
+            total_duration=5.0,
+            created_at=time.time()
+        )
+
+        batch_video_service.save_batch_task(task)
+
+        response = client.post(f"/api/batch-video/retry-segment/{task.batch_id}/1")
+
+        assert response.status_code == 400
+        assert "正在生成中" in response.json()["detail"]
+
+    def test_retry_single_segment_nonexistent_task(self):
+        """测试重新生成不存在的任务"""
+        response = client.post("/api/batch-video/retry-segment/nonexistent_id/1")
+
+        assert response.status_code == 404
+        assert "任务不存在" in response.json()["detail"]
+
+    def test_retry_single_segment_nonexistent_segment(self, sample_batch_task):
+        """测试重新生成不存在的片段"""
+        batch_video_service.save_batch_task(sample_batch_task)
+
+        # 尝试重新生成第10个片段（不存在）
+        response = client.post(f"/api/batch-video/retry-segment/{sample_batch_task.batch_id}/10")
+
+        assert response.status_code == 404
+        assert "片段 10 不存在" in response.json()["detail"]
+
+
+# ==================== 测试 9: 并发测试 ====================
 
 class TestConcurrentRequests:
     """测试并发请求"""

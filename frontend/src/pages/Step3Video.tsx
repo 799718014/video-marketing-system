@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { Clapperboard, ChevronLeft, ChevronRight, Loader2, CheckCircle2, XCircle, AlertCircle, RefreshCw, Play } from 'lucide-react'
 import type { ScriptResult, VideoTask, BatchVideoTask, VideoSegment, AspectRatio } from '../types'
-import { createVideo, getVideoStatus, createBatchVideo, getBatchStatus, checkMergeStatus, retryBatchSegments } from '../api'
+import { createVideo, getVideoStatus, createBatchVideo, getBatchStatus, checkMergeStatus, retryBatchSegments, retrySingleSegment } from '../api'
 import SegmentProgress from '../components/SegmentProgress'
 
 interface Props {
@@ -179,6 +179,22 @@ export default function Step3Video({ script, onBack, onNext }: Props) {
       startBatchPolling(batchTask.batch_id)
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : '重试失败'
+      setError(msg)
+    }
+  }
+
+  // 重试单个片段
+  const handleRetrySegment = async (segmentNo: number) => {
+    if (!batchTask) return
+    try {
+      const updated = await retrySingleSegment(batchTask.batch_id, segmentNo)
+      setBatchTask(updated)
+      // 如果轮询已停止，重新启动
+      if (!pollRef.current) {
+        startBatchPolling(batchTask.batch_id)
+      }
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : '重试片段失败'
       setError(msg)
     }
   }
@@ -400,6 +416,7 @@ export default function Step3Video({ script, onBack, onNext }: Props) {
                   key={segment.segment_id}
                   segment={segment}
                   onPreview={() => setPreviewSegment(segment)}
+                  onRetry={() => handleRetrySegment(segment.segment_no)}
                 />
               ))}
             </div>
@@ -408,7 +425,16 @@ export default function Step3Video({ script, onBack, onNext }: Props) {
           {/* 错误信息 */}
           {batchTask.status === 'failed' && batchTask.error && (
             <div className="card bg-red-50 border-red-200">
-              <p className="text-sm text-red-700">{batchTask.error}</p>
+              <div className="flex items-start gap-2">
+                <AlertCircle size={20} className="text-red-500 mt-0.5 shrink-0" />
+                <div className="flex-1">
+                  <p className="text-sm font-medium text-red-700 mb-1">视频生成失败</p>
+                  <p className="text-sm text-red-600">{batchTask.error}</p>
+                  <p className="text-xs text-red-500 mt-2">
+                    您可以单独重试失败的片段，或点击下方按钮重试所有失败片段
+                  </p>
+                </div>
+              </div>
             </div>
           )}
         </>

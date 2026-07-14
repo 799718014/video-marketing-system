@@ -242,6 +242,49 @@ async def retry_segments(batch_id: str, background_tasks: BackgroundTasks):
     return task
 
 
+# 5.1 重新生成单个片段
+@router.post("/retry-segment/{batch_id}/{segment_no}", response_model=BatchVideoTask)
+async def retry_single_segment(batch_id: str, segment_no: int, background_tasks: BackgroundTasks):
+    """
+    重新生成单个片段
+
+    支持对任意状态的片段进行重新生成：
+    - failed: 失败的片段重新生成
+    - succeed: 已成功的片段重新生成（不满意可以重新生成）
+    - cancelled: 已取消的片段重新生成
+
+    Args:
+        batch_id: 批量任务 ID
+        segment_no: 片段序号（从 1 开始）
+        background_tasks: 后台任务管理器
+
+    Returns:
+        更新后的任务对象
+
+    Raises:
+        HTTPException: 任务不存在或片段不存在
+    """
+    task = get_batch_task(batch_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    # 查找目标片段
+    segment = next((s for s in task.segments if s.segment_no == segment_no), None)
+    if not segment:
+        raise HTTPException(status_code=404, detail=f"片段 {segment_no} 不存在")
+
+    # 如果片段正在处理中，不允许重新生成
+    if segment.status == "processing":
+        raise HTTPException(status_code=400, detail=f"片段 {segment_no} 正在生成中，请稍后再试")
+
+    logger.info(f"启动单个片段重试: batch_id={batch_id}, segment_no={segment_no}, 原状态={segment.status}")
+
+    # 启动后台任务重新生成
+    background_tasks.add_task(batch_video_service.retry_single_segment, batch_id, segment_no)
+
+    return task
+
+
 # 6. 取消任务
 @router.post("/cancel/{batch_id}", response_model=BatchVideoTask)
 async def cancel_batch(batch_id: str):

@@ -152,12 +152,13 @@ async def generate_single_segment(
 
         except Exception as e:
             segment.retry_count += 1
-            logger.warning(f"片段 {segment.segment_no} 生成失败 (第{attempt + 1}次): {e}")
+            error_msg = f"片段 {segment.segment_no} 生成失败 (第{attempt + 1}次): {str(e)}"
+            logger.warning(error_msg)
 
             if attempt == max_retries - 1:
                 segment.status = "failed"
-                segment.error = str(e)
-                logger.error(f"片段 {segment.segment_no} 重试 {max_retries} 次后仍失败")
+                segment.error = f"重试 {max_retries} 次后失败: {str(e)}"
+                logger.error(f"片段 {segment.segment_no} 最终失败: {segment.error}")
             else:
                 # 指数退避
                 backoff_time = 2 ** attempt
@@ -280,6 +281,62 @@ async def retry_failed_segments(batch_id: str) -> BatchVideoTask:
     await generate_segments_concurrent(failed_segments, params, params.get("max_concurrent", 3))
 
     save_batch_task(task)
+    return task
+
+
+async def retry_single_segment(batch_id: str, segment_no: int) -> BatchVideoTask:
+    """
+    重新生成单个片段
+
+    Args:
+        batch_id: 批量任务 ID
+        segment_no: 片段序号（从 1 开始）
+
+    Returns:
+        更新后的批量任务
+
+    Raises:
+        ValueError: 任务不存在或片段不存在
+    """
+    task = get_batch_task(batch_id)
+    if not task:
+        raise ValueError(f"任务不存在: {batch_id}")
+
+    # 查找目标片段
+    segment = next((s for s in task.segments if s.segment_no == segment_no), None)
+    if not segment:
+        raise ValueError(f"片段不存在: segment_no={segment_no}")
+
+    logger.info(f"重新生成片段 {segment_no}, 当前状态: {segment.status}")
+
+    # 重置片段状态
+    segment.status = "pending"
+    segment.retry_count = 0
+    segment.error = None
+    segment.keling_task_id = None
+    segment.video_url = None
+    segment.cover_url = None
+
+    # 更新整体状态为 processing（如果之前已完成）
+    if task.status in ["failed", "succeed", "merging"]:
+        task.status = "processing"
+        task.error = None
+
+    # 获取生成参数
+    params = {
+        "model": task.video_params.get("model"),
+        "aspect_ratio": task.video_params.get("aspect_ratio"),
+        "cfg_scale": task.video_params.get("cfg_scale"),
+        "max_concurrent": 1,  # 单个片段，并发设为 1
+    }
+
+    # 重新生成该片段
+    await generate_single_segment(segment, params, max_retries=3)
+
+    # 保存任务状态
+    save_batch_task(task)
+
+    logger.info(f"片段 {segment_no} 重新生成完成, 新状态: {segment.status}")
     return task
 
 

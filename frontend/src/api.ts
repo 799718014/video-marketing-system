@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { ProductInfo, ScriptResult, VideoTask, BatchVideoTask, ScriptHistory, ScriptHistoryDetail, Template, TemplateDetail, HistoryStats } from './types'
+import type { ProductInfo, ScriptResult, VideoTask, BatchVideoTask, ScriptHistory, ScriptHistoryDetail, Template, TemplateDetail, HistoryStats, Image2VideoCreateRequest, Image2VideoResult } from './types'
 
 const http = axios.create({ baseURL: '/api' })
 
@@ -22,6 +22,14 @@ export interface VideoCreateRequest {
 
 export const generateScript = (req: ScriptRequest): Promise<ScriptResult> =>
   http.post<ScriptResult>('/script/generate', req).then((r) => r.data)
+
+// ========== 图生视频 API ==========
+
+export const createImage2Video = (req: Image2VideoCreateRequest): Promise<Image2VideoResult> =>
+  http.post<Image2VideoResult>('/video/image2video/create', req).then((r) => r.data)
+
+export const getImage2VideoStatus = (taskId: string): Promise<Image2VideoResult> =>
+  http.get<Image2VideoResult>(`/video/image2video/status/${taskId}`).then((r) => r.data)
 
 export const createVideo = (req: VideoCreateRequest): Promise<VideoTask> =>
   http.post<VideoTask>('/video/create', req).then((r) => r.data)
@@ -54,6 +62,9 @@ export const checkMergeStatus = (batchId: string): Promise<BatchVideoTask> =>
 
 export const retryBatchSegments = (batchId: string): Promise<BatchVideoTask> =>
   http.post<BatchVideoTask>(`/batch-video/retry/${batchId}`).then((r) => r.data)
+
+export const retrySingleSegment = (batchId: string, segmentNo: number): Promise<BatchVideoTask> =>
+  http.post<BatchVideoTask>(`/batch-video/retry-segment/${batchId}/${segmentNo}`).then((r) => r.data)
 
 export const getBatchDownloadUrl = (batchId: string): string =>
   `/api/batch-video/download/${batchId}`

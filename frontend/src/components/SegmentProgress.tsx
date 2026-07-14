@@ -37,8 +37,14 @@ export default function SegmentProgress({ segment, onPreview, onRetry }: Props) 
           {segment.duration}秒 · 对应场景 {segment.scene_index + 1}
           {segment.retry_count > 0 && ` · 已重试 ${segment.retry_count} 次`}
         </p>
+        {/* Prompt 预览 */}
+        <p className="text-xs text-gray-400 truncate max-w-md" title={segment.prompt}>
+          {segment.prompt}
+        </p>
         {segment.error && (
-          <p className="text-xs text-red-500 mt-1">{segment.error}</p>
+          <div className="mt-1 p-1.5 bg-red-50 rounded border border-red-100">
+            <p className="text-xs text-red-600 break-words" title={segment.error}>{segment.error}</p>
+          </div>
         )}
       </div>
 
@@ -53,11 +59,13 @@ export default function SegmentProgress({ segment, onPreview, onRetry }: Props) 
             <Play size={16} />
           </button>
         )}
-        {segment.status === 'failed' && onRetry && (
+        {(segment.status === 'failed' || segment.status === 'succeed') && onRetry && (
           <button
             onClick={onRetry}
-            className="p-2 rounded-lg hover:bg-gray-200 text-gray-600 transition-colors"
-            title="重试"
+            className={`p-2 rounded-lg hover:bg-gray-200 transition-colors ${
+              segment.status === 'failed' ? 'text-red-600 hover:bg-red-50' : 'text-gray-600'
+            }`}
+            title={segment.status === 'failed' ? '重试' : '重新生成'}
           >
             <RefreshCw size={16} />
           </button>

@@ -323,6 +323,189 @@ class TestBatchTaskManagement:
         assert retrieved.status == "merging"
 
 
+# ==================== 测试 3.5: 单个片段重新生成 ====================
+
+class TestRetrySingleSegment:
+    """测试单个片段重新生成功能"""
+
+    def test_retry_single_segment_reset_state(self):
+        """测试重新生成单个片段时重置状态"""
+        # 创建一个包含失败片段的任务
+        task = BatchVideoTask(
+            batch_id="retry_single_test",
+            script=ScriptResult(
+                title="测试",
+                total_duration=15,
+                style="活力",
+                scenes=[],
+                full_prompt="test"
+            ),
+            video_params={
+                "model": "kling-v1-5",
+                "aspect_ratio": "9:16",
+                "cfg_scale": 0.5,
+                "max_concurrent": 3
+            },
+            segments=[
+                VideoSegment(
+                    segment_id="seg_1",
+                    segment_no=1,
+                    scene_index=0,
+                    duration=5.0,
+                    prompt="测试1",
+                    status="succeed",
+                    video_url="http://example.com/vid1.mp4",
+                    cover_url="http://example.com/cover1.jpg",
+                    keling_task_id="keling_1",
+                    retry_count=1,
+                    error="旧错误"
+                ),
+                VideoSegment(
+                    segment_id="seg_2",
+                    segment_no=2,
+                    scene_index=0,
+                    duration=5.0,
+                    prompt="测试2",
+                    status="failed",
+                    error="生成失败",
+                    retry_count=3,
+                    keling_task_id="keling_failed"
+                ),
+            ],
+            status="failed",
+            total_duration=10.0,
+            created_at=1234567890.0
+        )
+
+        batch_video_service.save_batch_task(task)
+
+        # Mock 可灵服务
+        with patch('services.batch_video_service.keling_service') as mock_keling:
+            mock_keling.create_text2video = AsyncMock(return_value=Mock(task_id="keling_new"))
+            mock_keling.get_task_status = AsyncMock(
+                return_value=Mock(
+                    status="succeed",
+                    video_url="http://example.com/vid_new.mp4",
+                    cover_url="http://example.com/cover_new.jpg"
+                )
+            )
+
+            # 运行重试（同步调用，实际会异步执行）
+            import asyncio
+            asyncio.run(batch_video_service.retry_single_segment("retry_single_test", 2))
+
+        # 验证状态被重置
+        updated_task = batch_video_service.get_batch_task("retry_single_test")
+        assert updated_task is not None
+
+        segment = next(s for s in updated_task.segments if s.segment_no == 2)
+        assert segment.status == "succeed"
+        assert segment.retry_count == 0  # 重置为 0
+        assert segment.error is None
+        assert segment.video_url == "http://example.com/vid_new.mp4"
+        assert segment.keling_task_id == "keling_new"
+
+    def test_retry_single_segment_nonexistent_task(self):
+        """测试重新生成不存在的任务"""
+        import pytest
+
+        with pytest.raises(ValueError, match="任务不存在"):
+            import asyncio
+            asyncio.run(batch_video_service.retry_single_segment("nonexistent", 1))
+
+    def test_retry_single_segment_nonexistent_segment(self):
+        """测试重新生成不存在的片段"""
+        task = BatchVideoTask(
+            batch_id="test_batch",
+            script=ScriptResult(
+                title="测试",
+                total_duration=5,
+                style="活力",
+                scenes=[],
+                full_prompt="test"
+            ),
+            video_params={},
+            segments=[
+                VideoSegment(
+                    segment_id="seg_1",
+                    segment_no=1,
+                    scene_index=0,
+                    duration=5.0,
+                    prompt="测试",
+                    status="succeed"
+                ),
+            ],
+            status="succeed",
+            total_duration=5.0,
+            created_at=1234567890.0
+        )
+
+        batch_video_service.save_batch_task(task)
+
+        import pytest
+        with pytest.raises(ValueError, match="片段不存在"):
+            import asyncio
+            asyncio.run(batch_video_service.retry_single_segment("test_batch", 10))
+
+    @pytest.mark.asyncio
+    @patch('services.batch_video_service.keling_service')
+    async def test_retry_single_segment_generates_new_video(self, mock_keling):
+        """测试重新生成会生成新的视频"""
+        mock_keling.create_text2video = AsyncMock(return_value=Mock(task_id="keling_new"))
+        mock_keling.get_task_status = AsyncMock(
+            return_value=Mock(
+                status="succeed",
+                video_url="http://example.com/new_video.mp4",
+                cover_url="http://example.com/new_cover.jpg"
+            )
+        )
+
+        task = BatchVideoTask(
+            batch_id="new_video_test",
+            script=ScriptResult(
+                title="测试",
+                total_duration=5,
+                style="活力",
+                scenes=[],
+                full_prompt="test"
+            ),
+            video_params={
+                "model": "kling-v1-5",
+                "aspect_ratio": "9:16",
+                "cfg_scale": 0.5,
+                "max_concurrent": 3
+            },
+            segments=[
+                VideoSegment(
+                    segment_id="seg_1",
+                    segment_no=1,
+                    scene_index=0,
+                    duration=5.0,
+                    prompt="测试",
+                    status="failed",
+                    error="不满意"
+                ),
+            ],
+            status="failed",
+            total_duration=5.0,
+            created_at=1234567890.0
+        )
+
+        batch_video_service.save_batch_task(task)
+
+        await batch_video_service.retry_single_segment("new_video_test", 1)
+
+        # 验证可灵服务被调用
+        mock_keling.create_text2video.assert_called_once()
+        mock_keling.get_task_status.assert_called()
+
+        # 验证视频URL已更新
+        updated_task = batch_video_service.get_batch_task("new_video_test")
+        segment = updated_task.segments[0]
+        assert segment.video_url == "http://example.com/new_video.mp4"
+        assert segment.cover_url == "http://example.com/new_cover.jpg"
+
+
 # ==================== 测试 4: 视频拼接功能 ====================
 
 class TestVideoMerge:

@@ -43,6 +43,18 @@ class VideoCreateRequest(BaseModel):
     cfg_scale: float = 0.5
 
 
+class Image2VideoCreateRequest(BaseModel):
+    """可灵3.0 turbo 图生视频请求"""
+    image_url: str                    # 输入图片URL
+    prompt: str                       # 提示词，描述想要的视频效果
+    model: str = "kling-v1-5-video-generation-3.0-turbo"
+    duration: int = 5                 # 视频时长（秒）
+    aspect_ratio: str = "9:16"        # 宽高比
+    callback_url: Optional[str] = None  # 回调URL
+    external_task_id: Optional[str] = None  # 外部任务ID
+    watermark_enabled: bool = True    # 是否启用水印
+
+
 class VideoTask(BaseModel):
     task_id: str
     status: str                # submitted / processing / succeed / failed

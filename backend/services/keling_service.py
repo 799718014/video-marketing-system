@@ -1,7 +1,7 @@
 import os
 import logging
 import httpx
-from models.schemas import VideoCreateRequest, VideoTask
+from models.schemas import VideoCreateRequest, VideoTask, Image2VideoCreateRequest
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +86,88 @@ async def get_task_status(task_id: str) -> VideoTask:
             cover_url = works[0].get("cover_image_url")
     elif status == "failed":
         error = task_data.get("task_status_msg", "视频生成失败")
+
+    return VideoTask(
+        task_id=task_id,
+        status=status,
+        video_url=video_url,
+        cover_url=cover_url,
+        error=error,
+    )
+
+
+async def create_image2video(req: Image2VideoCreateRequest) -> VideoTask:
+    """可灵3.0 turbo 图生视频"""
+    payload = {
+        "model": req.model,
+        "image": req.image_url,
+        "prompt": req.prompt,
+        "duration": req.duration,
+        "aspect_ratio": req.aspect_ratio,
+        "watermark_info": {
+            "enabled": req.watermark_enabled
+        }
+    }
+
+    # 可选参数
+    if req.callback_url:
+        payload["callback_url"] = req.callback_url
+    if req.external_task_id:
+        payload["external_task_id"] = req.external_task_id
+
+    logger.info("KeLing create_image2video payload: %s", payload)
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            f"{KELING_API_BASE}/v1/videos/image2video",
+            headers=_headers(),
+            json=payload,
+        )
+        if not resp.is_success:
+            body = resp.text
+            logger.error("KeLing image2video API error %s: %s", resp.status_code, body)
+            raise RuntimeError(f"可灵图生视频 API 错误 {resp.status_code}: {body}")
+        data = resp.json()
+
+    logger.info("KeLing image2video response: %s", data)
+    code = data.get("code", -1)
+    if code != 0:
+        msg = data.get("message", str(data))
+        raise RuntimeError(f"可灵图生视频业务错误: {msg}")
+
+    task_data = data.get("data", {})
+    return VideoTask(
+        task_id=task_data.get("id", ""),
+        status=task_data.get("status", "submitted"),
+    )
+
+
+async def get_image2video_status(task_id: str) -> VideoTask:
+    """查询图生视频任务状态"""
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.get(
+            f"{KELING_API_BASE}/v1/videos/image2video/{task_id}",
+            headers=_headers(),
+        )
+        if not resp.is_success:
+            body = resp.text
+            logger.error("KeLing image2video status error %s: %s", resp.status_code, body)
+            raise RuntimeError(f"可灵图生视频查询错误 {resp.status_code}: {body}")
+        data = resp.json()
+
+    task_data = data.get("data", {})
+    status = task_data.get("status", "processing")
+
+    video_url = None
+    cover_url = None
+    error = None
+
+    if status == "succeeded":
+        works = task_data.get("works", [])
+        if works:
+            video_url = works[0].get("url")
+            cover_url = works[0].get("cover_image_url")
+    elif status == "failed":
+        error = task_data.get("message", "图生视频失败")
 
     return VideoTask(
         task_id=task_id,

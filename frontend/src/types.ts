@@ -26,10 +26,27 @@ export interface ScriptResult {
 
 export interface VideoTask {
   task_id: string
-  status: 'submitted' | 'processing' | 'succeed' | 'failed'
+  status: 'submitted' | 'processing' | 'succeed' | 'succeeded' | 'failed'
   video_url?: string
   cover_url?: string
   error?: string
+}
+
+export interface Image2VideoCreateRequest {
+  image_url: string
+  prompt: string
+  model?: string
+  duration?: number
+  aspect_ratio?: AspectRatio
+  callback_url?: string
+  external_task_id?: string
+  watermark_enabled?: boolean
+}
+
+export interface Image2VideoResult extends VideoTask {
+  create_time?: number
+  update_time?: number
+  external_id?: string
 }
 
 // ========== 批量视频相关类型 ==========
