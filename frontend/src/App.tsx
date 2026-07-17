@@ -26,6 +26,14 @@ export default function App() {
   const [videoTask, setVideoTask] = useState<VideoTask | null>(null)
   const [batchTask, setBatchTask] = useState<BatchVideoTask | null>(null)
 
+  // 从历史记录恢复状态
+  const handleReuseHistory = (history: { product_info: ProductInfo; script_data: ScriptResult; style: string; duration: number; platform: string }) => {
+    setProduct(history.product_info)
+    setScript(history.script_data)
+    setStep(2) // 直接跳到 Step3Video
+    setPage('generator')
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-blue-50">
       <header className="bg-white border-b border-gray-100 shadow-sm">
@@ -86,7 +94,7 @@ export default function App() {
 
       <main>
         {page === 'history' ? (
-          <History />
+          <History onReuseHistory={handleReuseHistory} />
         ) : page === 'template' ? (
           <TemplateLibrary />
         ) : page === 'image2video' ? (

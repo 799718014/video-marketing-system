@@ -1,13 +1,18 @@
 import { useState, useEffect } from 'react'
-import { getHistoryList, deleteHistory, updateHistoryFavorite, getHistoryStats, type ScriptHistory, type HistoryStats } from '../api'
+import { getHistoryList, getHistoryDetail, deleteHistory, updateHistoryFavorite, getHistoryStats, searchHistory } from '../api'
+import type { ScriptHistory, ScriptHistoryDetail, HistoryStats } from '../types'
 
-export default function History() {
+interface Props {
+  onReuseHistory?: (history: { product_info: any; script_data: any; style: string; duration: number; platform: string }) => void
+}
+
+export default function History({ onReuseHistory }: Props) {
   const [histories, setHistories] = useState<ScriptHistory[]>([])
   const [stats, setStats] = useState<HistoryStats | null>(null)
   const [loading, setLoading] = useState(true)
   const [searchKeyword, setSearchKeyword] = useState('')
   const [favoriteOnly, setFavoriteOnly] = useState(false)
-  const [selectedHistory, setSelectedHistory] = useState<ScriptHistory | null>(null)
+  const [selectedHistory, setSelectedHistory] = useState<ScriptHistoryDetail | null>(null)
   const [showDetailModal, setShowDetailModal] = useState(false)
 
   const loadHistories = async () => {
@@ -72,9 +77,15 @@ export default function History() {
     }
   }
 
-  const handleViewDetail = (history: ScriptHistory) => {
-    setSelectedHistory(history)
-    setShowDetailModal(true)
+  const handleViewDetail = async (history: ScriptHistory) => {
+    try {
+      const detail = await getHistoryDetail(history.id)
+      setSelectedHistory(detail)
+      setShowDetailModal(true)
+    } catch (error) {
+      console.error('获取历史详情失败:', error)
+      alert('获取详情失败，请稍后重试')
+    }
   }
 
   useEffect(() => {
@@ -223,7 +234,7 @@ export default function History() {
       {/* 详情弹窗 */}
       {showDetailModal && selectedHistory && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[80vh] overflow-y-auto">
+          <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] overflow-y-auto">
             <div className="p-6">
               <div className="flex justify-between items-start mb-4">
                 <h2 className="text-xl font-bold">{selectedHistory.title}</h2>
@@ -234,14 +245,24 @@ export default function History() {
                   ×
                 </button>
               </div>
-              <div className="space-y-4">
-                <div>
-                  <label className="text-gray-500 text-sm">产品名称</label>
-                  <div className="font-medium">{selectedHistory.product_name}</div>
-                </div>
-                <div>
-                  <label className="text-gray-500 text-sm">品牌</label>
-                  <div className="font-medium">{selectedHistory.brand || '-'}</div>
+              <div className="space-y-4 mb-6">
+                <div className="grid grid-cols-4 gap-4">
+                  <div>
+                    <label className="text-gray-500 text-sm">产品名称</label>
+                    <div className="font-medium">{selectedHistory.product_name}</div>
+                  </div>
+                  <div>
+                    <label className="text-gray-500 text-sm">品牌</label>
+                    <div className="font-medium">{selectedHistory.brand || '-'}</div>
+                  </div>
+                  <div>
+                    <label className="text-gray-500 text-sm">风格</label>
+                    <div className="font-medium">{selectedHistory.style}</div>
+                  </div>
+                  <div>
+                    <label className="text-gray-500 text-sm">时长</label>
+                    <div className="font-medium">{selectedHistory.duration}秒</div>
+                  </div>
                 </div>
                 <div>
                   <label className="text-gray-500 text-sm">关键词</label>
@@ -253,25 +274,43 @@ export default function History() {
                     ))}
                   </div>
                 </div>
-                <div className="grid grid-cols-3 gap-4">
-                  <div>
-                    <label className="text-gray-500 text-sm">风格</label>
-                    <div className="font-medium">{selectedHistory.style}</div>
-                  </div>
-                  <div>
-                    <label className="text-gray-500 text-sm">时长</label>
-                    <div className="font-medium">{selectedHistory.duration}秒</div>
-                  </div>
-                  <div>
-                    <label className="text-gray-500 text-sm">平台</label>
-                    <div className="font-medium">{selectedHistory.platform}</div>
-                  </div>
-                </div>
                 <div>
                   <label className="text-gray-500 text-sm">创建时间</label>
-                  <div className="font-medium">
+                  <div className="font-medium text-sm text-gray-600">
                     {new Date(selectedHistory.created_at).toLocaleString()}
                   </div>
+                </div>
+              </div>
+
+              {/* 脚本场景 */}
+              <div className="border-t pt-4">
+                <h3 className="font-semibold text-lg mb-3">脚本场景</h3>
+                <div className="space-y-3">
+                  {selectedHistory.script_data?.scenes?.map((scene: any, index: number) => (
+                    <div key={index} className="p-3 bg-gray-50 rounded-lg border">
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className="w-6 h-6 bg-brand-500 text-white text-xs rounded-full flex items-center justify-center font-medium">
+                          {scene.scene_no}
+                        </span>
+                        <span className="font-medium text-sm">场景 {scene.scene_no}</span>
+                        <span className="ml-auto text-xs text-gray-500">{scene.duration}s</span>
+                      </div>
+                      <div className="grid grid-cols-1 gap-2 text-sm">
+                        <div>
+                          <span className="text-gray-500">画面：</span>
+                          <span className="text-gray-800">{scene.visual}</span>
+                        </div>
+                        <div>
+                          <span className="text-gray-500">旁白：</span>
+                          <span className="text-gray-800">{scene.narration}</span>
+                        </div>
+                        <div>
+                          <span className="text-gray-500">字幕：</span>
+                          <span className="text-gray-800">{scene.subtitle}</span>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
               <div className="mt-6 flex justify-end gap-3">
@@ -283,8 +322,24 @@ export default function History() {
                 </button>
                 <button
                   onClick={() => {
-                    // TODO: 实现重新使用脚本功能
-                    alert('重新使用功能开发中...')
+                    if (selectedHistory && onReuseHistory) {
+                      onReuseHistory({
+                        product_info: {
+                          name: selectedHistory.product_name,
+                          brand: selectedHistory.brand || '',
+                          keywords: selectedHistory.keywords,
+                          description: '',
+                          features: [],
+                          target_audience: '',
+                          price: ''
+                        },
+                        script_data: selectedHistory.script_data,
+                        style: selectedHistory.style,
+                        duration: selectedHistory.duration,
+                        platform: selectedHistory.platform
+                      })
+                    }
+                    setShowDetailModal(false)
                   }}
                   className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600"
                 >
