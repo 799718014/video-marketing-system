@@ -55,7 +55,12 @@ export interface VideoSegment {
   segment_id: string
   segment_no: number
   scene_index: number
+  /** 成片时间线中的目标时长。 */
   duration: number
+  /** 提交模型的合法生成时长，短分镜通常生成后再裁剪。 */
+  generation_duration?: number
+  /** 合并时实际保留的时长，未设置时使用 duration。 */
+  trim_duration?: number
   prompt: string
   keling_task_id?: string
   status: 'pending' | 'processing' | 'succeed' | 'failed'

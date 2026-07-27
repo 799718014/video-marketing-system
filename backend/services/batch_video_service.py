@@ -13,6 +13,16 @@ logger = logging.getLogger(__name__)
 # 内存存储批量任务（生产环境应使用数据库）
 _batch_tasks: Dict[str, BatchVideoTask] = {}
 
+# 当前文本生视频模型的单次生成时长固定为 5 秒。
+# duration 保存成片时间线时长，generation_duration 才是提交给模型的参数。
+MODEL_GENERATION_DURATION = 5
+
+
+def is_non_retriable_generation_error(error: Exception) -> bool:
+    """可灵 400 参数校验错误不会因重试而恢复，应立即结束当前片段。"""
+    message = str(error)
+    return "API error 400" in message or "API 错误 400" in message
+
 
 def get_batch_task(batch_id: str) -> Optional[BatchVideoTask]:
     """获取批量任务"""
@@ -103,7 +113,21 @@ def split_script_to_segments(script: ScriptResult, max_duration: float = 5.0) ->
     if current_scenes:
         segments.append(create_segment_from_scenes(current_scenes, len(segments) + 1))
 
-    logger.info(f"脚本拆分完成: {script.total_duration}秒 -> {len(segments)}个片段")
+    # 所有片段最多为 5 秒；不足 5 秒的片段仍按 5 秒向模型生成，合并阶段再裁剪。
+    for segment in segments:
+        if segment['duration'] <= 0:
+            raise ValueError(f"片段时长必须大于 0: {segment}")
+        if segment['duration'] > MODEL_GENERATION_DURATION:
+            raise ValueError(f"片段时长超过模型单次上限 {MODEL_GENERATION_DURATION} 秒: {segment}")
+        segment['generation_duration'] = MODEL_GENERATION_DURATION
+        segment['trim_duration'] = segment['duration']
+
+    logger.info(
+        "脚本拆分完成: %s秒 -> %s个片段，模型统一生成%s秒，不足部分在合并时裁剪",
+        script.total_duration,
+        len(segments),
+        MODEL_GENERATION_DURATION,
+    )
     return segments
 
 
@@ -124,12 +148,13 @@ async def generate_single_segment(
         try:
             segment.status = "processing"
 
-            # 调用可灵 API
+            # 模型只接受 5 秒生成任务；短分镜的实际时长在合并阶段由 trim_duration 控制。
+            generation_duration = segment.generation_duration or MODEL_GENERATION_DURATION
             keling_task = await keling_service.create_text2video(
                 VideoCreateRequest(
                     prompt=segment.prompt,
                     model=params["model"],
-                    duration=int(segment.duration),
+                    duration=generation_duration,
                     aspect_ratio=params["aspect_ratio"],
                     cfg_scale=params["cfg_scale"],
                 )
@@ -153,6 +178,13 @@ async def generate_single_segment(
                     raise RuntimeError(status.error or "视频生成失败")
 
         except Exception as e:
+            if is_non_retriable_generation_error(e):
+                # 例如 duration 非法：不再重复提交相同参数，避免无效扣费和延迟。
+                segment.status = "failed"
+                segment.error = f"不可重试的参数错误: {str(e)}"
+                logger.error("片段 %s 参数校验失败，停止重试: %s", segment.segment_no, e)
+                return
+
             segment.retry_count += 1
             error_msg = f"片段 {segment.segment_no} 生成失败 (第{attempt + 1}次): {str(e)}"
             logger.warning(error_msg)

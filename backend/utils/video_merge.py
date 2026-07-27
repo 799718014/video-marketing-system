@@ -2,7 +2,7 @@ import asyncio
 import os
 import tempfile
 import logging
-from typing import List
+from typing import List, Optional
 import httpx
 import aiofiles
 from moviepy.editor import VideoFileClip, concatenate_videoclips
@@ -38,7 +38,8 @@ class VideoMerger:
         segment_paths: List[str],
         output_path: str,
         transition: str = "fade",
-        transition_duration: float = 0.5
+        transition_duration: float = 0.5,
+        clip_durations: Optional[List[float]] = None,
     ) -> str:
         """
         合并多个视频片段（同步版本，在事件循环中运行）
@@ -57,9 +58,20 @@ class VideoMerger:
         try:
             # 1. 加载视频片段
             clips = []
-            for path in segment_paths:
+            for index, path in enumerate(segment_paths):
                 try:
                     clip = VideoFileClip(path)
+                    # 模型统一生成 5 秒，按脚本时间线裁剪短分镜，保证最终成片总时长正确。
+                    if clip_durations and index < len(clip_durations):
+                        target_duration = clip_durations[index]
+                        if target_duration <= 0:
+                            raise ValueError(f"片段裁剪时长必须大于 0: {target_duration}")
+                        if clip.duration + 0.05 < target_duration:
+                            raise ValueError(
+                                f"视频片段时长不足，无法裁剪到 {target_duration} 秒: {path}"
+                            )
+                        if target_duration < clip.duration:
+                            clip = clip.subclip(0, target_duration)
                     clips.append(clip)
                     logger.info(f"加载片段成功: {path} (时长: {clip.duration}s)")
                 except Exception as e:
@@ -117,7 +129,8 @@ class VideoMerger:
         segment_urls: List[str],
         output_path: str,
         transition: str = "fade",
-        transition_duration: float = 0.5
+        transition_duration: float = 0.5,
+        clip_durations: Optional[List[float]] = None,
     ) -> str:
         """
         合并多个视频片段（异步版本）
@@ -160,7 +173,8 @@ class VideoMerger:
                 segment_paths,
                 output_path,
                 transition,
-                transition_duration
+                transition_duration,
+                clip_durations,
             )
 
             return result

@@ -73,6 +73,27 @@ class TestScriptSplitting:
         assert "part 2" in segments[1]['prompt']
         assert "part 3" in segments[2]['prompt']
 
+    def test_short_segments_generate_for_five_seconds_and_trim_to_timeline(self):
+        """4 秒和 1 秒分镜不能直接提交模型，必须生成 5 秒后在合并阶段裁剪。"""
+        script = ScriptResult(
+            title="时长规划测试",
+            total_duration=15,
+            style="活力",
+            scenes=[
+                ScriptScene(scene_no=1, duration=4.0, visual="场景1", narration="", subtitle=""),
+                ScriptScene(scene_no=2, duration=5.0, visual="场景2", narration="", subtitle=""),
+                ScriptScene(scene_no=3, duration=6.0, visual="场景3", narration="", subtitle=""),
+            ],
+            full_prompt="test",
+        )
+
+        segments = batch_video_service.split_script_to_segments(script, max_duration=5.0)
+
+        assert [segment['duration'] for segment in segments] == [4.0, 5.0, 5.0, 1.0]
+        assert [segment['generation_duration'] for segment in segments] == [5, 5, 5, 5]
+        assert [segment['trim_duration'] for segment in segments] == [4.0, 5.0, 5.0, 1.0]
+        assert sum(segment['trim_duration'] for segment in segments) == 15.0
+
     def test_split_mixed_scenes(self):
         """测试混合场景分段"""
         script = ScriptResult(
@@ -202,6 +223,35 @@ class TestSegmentGeneration:
 
         assert segment.status == "succeed"
         assert segment.retry_count == 1
+
+    @pytest.mark.asyncio
+    @patch('services.batch_video_service.keling_service')
+    async def test_invalid_duration_error_is_not_retried(self, mock_keling):
+        """可灵 400 参数错误必须立即失败，不能重复提交同一非法时长。"""
+        mock_keling.create_text2video = AsyncMock(
+            side_effect=RuntimeError("可灵影音 API 错误 400: duration value '1' is invalid")
+        )
+        segment = VideoSegment(
+            segment_id="seg_invalid_duration",
+            segment_no=1,
+            scene_index=0,
+            duration=1.0,
+            generation_duration=1,
+            trim_duration=1.0,
+            prompt="测试prompt",
+            status="pending",
+        )
+
+        await batch_video_service.generate_single_segment(
+            segment,
+            params={"model": "kling-v1-5", "aspect_ratio": "9:16", "cfg_scale": 0.5},
+            max_retries=3,
+        )
+
+        assert segment.status == "failed"
+        assert segment.retry_count == 0
+        assert "不可重试" in segment.error
+        mock_keling.create_text2video.assert_awaited_once()
 
     @pytest.mark.asyncio
     @patch('services.batch_video_service.keling_service')

@@ -55,6 +55,8 @@ async def create_batch_video(
             segment_no=i + 1,
             scene_index=seg_data['scene_index'],
             duration=seg_data['duration'],
+            generation_duration=seg_data['generation_duration'],
+            trim_duration=seg_data['trim_duration'],
             prompt=seg_data['prompt'],
             status="pending",
         ))
@@ -139,8 +141,9 @@ async def merge_video_if_ready(batch_id: str):
         logger.warning(f"任务 {batch_id} 并非所有片段都成功，跳过合并")
         return
 
-    # 提取视频 URL
+    # 提取视频 URL 与成片目标时长。短分镜已按 5 秒生成，合并时再裁剪回脚本时长。
     segment_urls = [s.video_url for s in succeed_segments if s.video_url]
+    clip_durations = [s.trim_duration or s.duration for s in succeed_segments if s.video_url]
     if not segment_urls:
         logger.error(f"任务 {batch_id} 没有有效的视频 URL")
         task.status = "failed"
@@ -161,6 +164,7 @@ async def merge_video_if_ready(batch_id: str):
             output_path=output_path,
             transition=task.video_params.get("transition", "fade"),
             transition_duration=0.5,
+            clip_durations=clip_durations,
         )
 
         # 更新任务状态
@@ -371,4 +375,3 @@ def get_batch_task(batch_id: str) -> BatchVideoTask:
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
     return task
-

@@ -69,7 +69,9 @@ class VideoSegment(BaseModel):
     segment_id: str                    # 片段唯一 ID
     segment_no: int                    # 片段序号 (1, 2, 3...)
     scene_index: int                   # 对应的场景索引
-    duration: float                    # 片段时长（秒）
+    duration: float                    # 成片时间线中的目标时长（秒）
+    generation_duration: Optional[int] = None  # 提交给模型的合法生成时长（秒）
+    trim_duration: Optional[float] = None  # 合并时保留的时长，默认使用 duration
     prompt: str                        # 生成 prompt
     keling_task_id: Optional[str] = None    # 可灵任务 ID
     status: str                        # pending/processing/succeed/failed
