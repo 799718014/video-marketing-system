@@ -1,0 +1,205 @@
+"""可重复执行的确定性后期合成：视频底片 + 商品透明图 + 模板文字。"""
+
+from __future__ import annotations
+
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlparse
+
+import httpx
+
+from config import DATA_DIR, FFMPEG_BINARY, FFMPEG_FONT_FILE, OUTPUT_DIR, PUBLIC_BASE_URL, UPLOAD_DIR
+
+
+class CompositionError(RuntimeError):
+    """视频、素材或 FFmpeg 条件不满足时的可读错误。"""
+
+
+class DeterministicCompositor:
+    """只以真实商品资产和模板字段做合成，不让模型承担品牌和文案的生成。"""
+
+    CANVAS_WIDTH = 1080
+    CANVAS_HEIGHT = 1920
+
+    def compose_scene(self, context: dict[str, Any]) -> str:
+        if not context.get("video_url"):
+            raise CompositionError("图生视频尚未生成完成，不能进行后期合成")
+        self._require_ffmpeg()
+        layers = set(context["postprocess_layers"])
+        config = context["postprocess_config"]
+
+        with tempfile.TemporaryDirectory(prefix=f"compose_task_{context['id']}_", dir=DATA_DIR) as temporary:
+            workdir = Path(temporary)
+            video_file = self._materialize(context["video_url"], workdir, "source.mp4")
+            transparent_asset = self._select_asset(context, config.get("transparent_asset_id"), "transparent")
+            logo_asset = self._select_asset(context, config.get("logo_asset_id"), "logo")
+
+            input_files = [video_file]
+            filter_steps = [
+                "[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,"
+                "pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=0x111111,setsar=1[v0]"
+            ]
+            current = "v0"
+
+            if "transparent_product" in layers:
+                if not transparent_asset:
+                    raise CompositionError("模板要求透明底商品图，但商品资产库中未配置 transparent 资产")
+                product_file = self._materialize(transparent_asset["url"], workdir, "product.png")
+                input_files.append(product_file)
+                next_label = f"v{len(input_files)}"
+                filter_steps.extend([
+                    f"[{len(input_files) - 1}:v]scale=320:-1[product]",
+                    f"[{current}][product]overlay=x=W-w-48:y=H-h-280:format=auto[{next_label}]",
+                ])
+                current = next_label
+
+            if "brand_logo" in layers:
+                if not logo_asset:
+                    raise CompositionError("模板要求 Logo，但商品资产库中未配置 logo 资产")
+                logo_file = self._materialize(logo_asset["url"], workdir, "logo.png")
+                input_files.append(logo_file)
+                next_label = f"v{len(input_files)}"
+                filter_steps.extend([
+                    f"[{len(input_files) - 1}:v]scale=160:-1[logo]",
+                    f"[{current}][logo]overlay=x=48:y=48:format=auto[{next_label}]",
+                ])
+                current = next_label
+
+            for index, (layer, text, style) in enumerate(self._text_layers(context, layers), start=1):
+                text_file = workdir / f"{index}_{layer}.txt"
+                text_file.write_text(text, encoding="utf-8")
+                next_label = f"text{index}"
+                filter_steps.append(
+                    f"[{current}]drawtext={self._drawtext_options(text_file, style)}[{next_label}]"
+                )
+                current = next_label
+
+            output_file = OUTPUT_DIR / f"task_{context['id']}_composed.mp4"
+            command = [FFMPEG_BINARY, "-y", "-i", str(video_file)]
+            for image in input_files[1:]:
+                command.extend(["-loop", "1", "-i", str(image)])
+            command.extend([
+                "-filter_complex", ";".join(filter_steps),
+                "-map", f"[{current}]", "-map", "0:a?",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+                "-shortest", "-movflags", "+faststart", str(output_file),
+            ])
+            self._run_ffmpeg(command)
+            return f"{PUBLIC_BASE_URL}/outputs/{output_file.name}"
+
+    def merge_storyboard(self, storyboard_id: int, tasks: list[dict[str, Any]]) -> str:
+        """以统一编码后的分镜成片顺序拼接，不重新生成任何品牌或字幕内容。"""
+        if not tasks:
+            raise CompositionError("没有可合并的视频片段")
+        incomplete = [str(task["scene_no"]) for task in tasks if not task.get("composed_video_url")]
+        if incomplete:
+            raise CompositionError(f"分镜 {', '.join(incomplete)} 尚未完成确定性合成")
+        self._require_ffmpeg()
+
+        with tempfile.TemporaryDirectory(prefix=f"merge_storyboard_{storyboard_id}_", dir=DATA_DIR) as temporary:
+            workdir = Path(temporary)
+            files = [
+                self._materialize(task["composed_video_url"], workdir, f"scene_{task['scene_no']}.mp4")
+                for task in tasks
+            ]
+            manifest = workdir / "concat.txt"
+            manifest.write_text(
+                "".join(f"file '{self._concat_path(file)}'\n" for file in files), encoding="utf-8"
+            )
+            output_file = OUTPUT_DIR / f"storyboard_{storyboard_id}_final.mp4"
+            self._run_ffmpeg([
+                FFMPEG_BINARY, "-y", "-f", "concat", "-safe", "0", "-i", str(manifest),
+                "-c", "copy", "-movflags", "+faststart", str(output_file),
+            ])
+            return f"{PUBLIC_BASE_URL}/outputs/{output_file.name}"
+
+    def _text_layers(self, context: dict[str, Any], layers: set[str]) -> list[tuple[str, str, dict[str, Any]]]:
+        if not layers.intersection({"subtitle", "price_tag", "cta"}):
+            return []
+        if not FFMPEG_FONT_FILE or not Path(FFMPEG_FONT_FILE).is_file():
+            raise CompositionError("未找到中文字体；请配置 FFMPEG_FONT_FILE 后再合成文字图层")
+        config = context["postprocess_config"]
+        result: list[tuple[str, str, dict[str, Any]]] = []
+        if "subtitle" in layers:
+            subtitle = config.get("subtitle") or (context["selling_points"] or [context["product_name"]])[0]
+            result.append(("subtitle", subtitle, {"font_size": 46, "x": "48", "y": "1320", "box_color": "black@0.55"}))
+        if "price_tag" in layers:
+            price = config.get("price_text") or context.get("product_price")
+            if not price:
+                raise CompositionError("模板要求价格标签，但商品事实中没有 price 或 price_text")
+            result.append(("price", str(price), {"font_size": 62, "x": "48", "y": "1430", "box_color": "0xE53935@0.92"}))
+        if "cta" in layers:
+            result.append(("cta", config.get("cta") or "立即购买", {"font_size": 48, "x": "(w-text_w)/2", "y": "1760", "box_color": "0xFF5A36@0.95"}))
+        return result
+
+    def _drawtext_options(self, text_file: Path, style: dict[str, Any]) -> str:
+        return (
+            f"fontfile='{self._filter_path(Path(FFMPEG_FONT_FILE))}':"
+            f"textfile='{self._filter_path(text_file)}':"
+            f"fontcolor=white:fontsize={style['font_size']}:x={style['x']}:y={style['y']}:"
+            f"box=1:boxcolor={style['box_color']}:boxborderw=18"
+        )
+
+    def _select_asset(self, context: dict[str, Any], requested_id: Any, asset_type: str) -> dict[str, Any] | None:
+        assets = context["assets"]
+        if requested_id is not None:
+            return next(
+                (asset for asset in assets if asset["id"] == requested_id and asset["asset_type"] == asset_type),
+                None,
+            )
+        return next((asset for asset in assets if asset["asset_type"] == asset_type), None)
+
+    def _materialize(self, url: str, workdir: Path, filename: str) -> Path:
+        local_file = self._local_public_file(url)
+        if local_file:
+            if not local_file.is_file():
+                raise CompositionError(f"本地素材不存在: {url}")
+            return local_file
+        target = workdir / filename
+        try:
+            with httpx.stream("GET", url, timeout=90, follow_redirects=True) as response:
+                response.raise_for_status()
+                with target.open("wb") as stream:
+                    for chunk in response.iter_bytes():
+                        stream.write(chunk)
+        except httpx.HTTPError as error:
+            raise CompositionError(f"下载素材失败: {url} ({error})") from error
+        return target
+
+    @staticmethod
+    def _filter_path(path: Path) -> str:
+        return path.as_posix().replace(":", r"\:").replace("'", r"\'")
+
+    @staticmethod
+    def _concat_path(path: Path) -> str:
+        return path.as_posix().replace("'", r"'\\''")
+
+    @staticmethod
+    def _run_ffmpeg(command: list[str]) -> None:
+        result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if result.returncode != 0:
+            raise CompositionError(f"FFmpeg 合成失败: {result.stderr[-1200:]}")
+
+    @staticmethod
+    def _require_ffmpeg() -> None:
+        if not shutil.which(FFMPEG_BINARY) and not Path(FFMPEG_BINARY).is_file():
+            raise CompositionError("未找到 FFmpeg；请安装 ffmpeg 或配置 FFMPEG_BINARY")
+
+    @staticmethod
+    def _local_public_file(url: str) -> Path | None:
+        parsed = urlparse(url)
+        if not url.startswith(PUBLIC_BASE_URL + "/"):
+            return None
+        if parsed.path.startswith("/assets/"):
+            candidate = UPLOAD_DIR / Path(parsed.path).name
+            return candidate if candidate.is_file() else None
+        if parsed.path.startswith("/outputs/"):
+            candidate = OUTPUT_DIR / Path(parsed.path).name
+            return candidate if candidate.is_file() else None
+        return None
+
+
+compositor = DeterministicCompositor()
