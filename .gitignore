@@ -4,3 +4,5 @@
 /backend/.env.local
 /backend/__pycache__
 backend/**/__pycache__
+backend/utils/__pycache__/video_merge.cpython-312.pyc
+backend/utils/__pycache__/video_merge.cpython-312.pyc

@@ -1,8 +1,10 @@
 import logging
-from fastapi import APIRouter, HTTPException
+from typing import Literal
+
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 import httpx
-from models.schemas import VideoCreateRequest, VideoTask, Image2VideoCreateRequest
+from models.schemas import Image2VideoCreateRequest, VideoCreateRequest, VideoListResponse, VideoTask
 from services import keling_service
 
 router = APIRouter()
@@ -29,10 +31,31 @@ async def get_video_status(task_id: str):
         raise HTTPException(status_code=500, detail=f"查询状态失败：{str(e)}")
 
 
+@router.get("/list", response_model=VideoListResponse)
+async def get_video_list(
+    task_type: Literal["text2video", "image2video"] = Query("text2video"),
+    page_num: int = Query(1, ge=1, le=1000),
+    page_size: int = Query(30, ge=1, le=100),
+):
+    """查询可灵已生成任务，便于预览并及时下载转存。"""
+    try:
+        return await keling_service.get_video_list(task_type, page_num, page_size)
+    except Exception as e:
+        logger.exception("get_video_list failed")
+        raise HTTPException(status_code=500, detail=f"查询可灵视频列表失败：{str(e)}")
+
+
 @router.get("/download/{task_id}")
-async def download_video(task_id: str):
-    task = await keling_service.get_task_status(task_id)
-    if task.status != "succeed" or not task.video_url:
+async def download_video(
+    task_id: str,
+    task_type: Literal["text2video", "image2video"] = Query("text2video"),
+):
+    task = (
+        await keling_service.get_task_status(task_id)
+        if task_type == "text2video"
+        else await keling_service.get_image2video_status(task_id)
+    )
+    if task.status not in {"succeed", "succeeded"} or not task.video_url:
         raise HTTPException(status_code=404, detail="视频尚未生成完成")
 
     async def stream_video():

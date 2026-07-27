@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { ProductInfo, ScriptResult, VideoTask, BatchVideoTask, ScriptHistory, ScriptHistoryDetail, Template, TemplateDetail, HistoryStats, Image2VideoCreateRequest, Image2VideoResult } from './types'
+import type { ProductInfo, ScriptResult, VideoTask, VideoListResponse, VideoTaskType, BatchVideoTask, ScriptHistory, ScriptHistoryDetail, Template, TemplateDetail, HistoryStats, Image2VideoCreateRequest, Image2VideoResult } from './types'
 
 // 页面和测试可从 API 模块统一获取接口相关的领域类型。
 export type {
@@ -46,8 +46,17 @@ export const createVideo = (req: VideoCreateRequest): Promise<VideoTask> =>
 export const getVideoStatus = (taskId: string): Promise<VideoTask> =>
   http.get<VideoTask>(`/video/status/${taskId}`).then((r) => r.data)
 
-export const getDownloadUrl = (taskId: string): string =>
-  `/api/video/download/${taskId}`
+export const getVideoList = (
+  taskType: VideoTaskType = 'text2video',
+  pageNum: number = 1,
+  pageSize: number = 30,
+): Promise<VideoListResponse> =>
+  http.get<VideoListResponse>('/video/list', {
+    params: { task_type: taskType, page_num: pageNum, page_size: pageSize },
+  }).then((r) => r.data)
+
+export const getDownloadUrl = (taskId: string, taskType: VideoTaskType = 'text2video'): string =>
+  `/api/video/download/${taskId}?task_type=${taskType}`
 
 // ========== 批量视频 API ==========
 

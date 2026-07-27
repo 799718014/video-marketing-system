@@ -1,7 +1,13 @@
 import os
 import logging
 import httpx
-from models.schemas import VideoCreateRequest, VideoTask, Image2VideoCreateRequest
+from models.schemas import (
+    Image2VideoCreateRequest,
+    VideoCreateRequest,
+    VideoListItem,
+    VideoListResponse,
+    VideoTask,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +101,61 @@ async def get_task_status(task_id: str) -> VideoTask:
         video_url=video_url,
         cover_url=cover_url,
         error=error,
+    )
+
+
+def _parse_video_list_item(task_data: dict, task_type: str) -> VideoListItem:
+    """兼容可灵原生与兼容网关返回的任务列表字段。"""
+    task_id = task_data.get("task_id") or task_data.get("id")
+    if not task_id:
+        raise RuntimeError(f"可灵任务列表存在缺少 task_id 的记录: {task_data}")
+
+    status = task_data.get("task_status") or task_data.get("status") or "processing"
+    works = task_data.get("works") or task_data.get("task_result", {}).get("videos", [])
+    video = works[0] if works else {}
+
+    return VideoListItem(
+        task_id=task_id,
+        task_type=task_type,
+        status=status,
+        video_url=video.get("url"),
+        cover_url=video.get("cover_image_url"),
+        duration=video.get("duration"),
+        error=(task_data.get("task_status_msg") or task_data.get("message")) if status == "failed" else None,
+        created_at=task_data.get("created_at"),
+        updated_at=task_data.get("updated_at"),
+    )
+
+
+async def get_video_list(task_type: str, page_num: int, page_size: int) -> VideoListResponse:
+    """查询当前可灵账号保留的视频生成任务。"""
+    if task_type not in {"text2video", "image2video"}:
+        raise ValueError(f"不支持的可灵任务类型: {task_type}")
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.get(
+            f"{KELING_API_BASE}/v1/videos/{task_type}",
+            headers=_headers(),
+            params={"pageNum": page_num, "pageSize": page_size},
+        )
+        if not resp.is_success:
+            body = resp.text
+            logger.error("KeLing task list error %s: %s", resp.status_code, body)
+            raise RuntimeError(f"可灵任务列表查询错误 {resp.status_code}: {body}")
+        data = resp.json()
+
+    if data.get("code", 0) != 0:
+        raise RuntimeError(f"可灵任务列表业务错误: {data.get('message', data)}")
+
+    task_list = data.get("data") or []
+    if not isinstance(task_list, list):
+        raise RuntimeError(f"可灵任务列表响应格式异常: {data}")
+
+    return VideoListResponse(
+        items=[_parse_video_list_item(task, task_type) for task in task_list],
+        page_num=page_num,
+        page_size=page_size,
+        task_type=task_type,
     )
 
 

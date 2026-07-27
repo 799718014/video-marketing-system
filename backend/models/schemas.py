@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Literal
 
 
 class ProductInfo(BaseModel):
@@ -61,6 +61,22 @@ class VideoTask(BaseModel):
     video_url: Optional[str] = None
     cover_url: Optional[str] = None
     error: Optional[str] = None
+
+
+class VideoListItem(VideoTask):
+    """可灵任务列表中的一条视频生成任务。"""
+    task_type: Literal["text2video", "image2video"]
+    created_at: Optional[int] = None
+    updated_at: Optional[int] = None
+    duration: Optional[str] = None
+
+
+class VideoListResponse(BaseModel):
+    """可灵视频生成任务的分页结果。"""
+    items: List[VideoListItem]
+    page_num: int
+    page_size: int
+    task_type: Literal["text2video", "image2video"]
 
 
 # ========== 批量视频生成相关模型 ==========

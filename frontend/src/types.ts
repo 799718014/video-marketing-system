@@ -32,6 +32,22 @@ export interface VideoTask {
   error?: string
 }
 
+export type VideoTaskType = 'text2video' | 'image2video'
+
+export interface VideoListItem extends VideoTask {
+  task_type: VideoTaskType
+  created_at?: number
+  updated_at?: number
+  duration?: string
+}
+
+export interface VideoListResponse {
+  items: VideoListItem[]
+  page_num: number
+  page_size: number
+  task_type: VideoTaskType
+}
+
 export interface Image2VideoCreateRequest {
   image_url: string
   prompt: string

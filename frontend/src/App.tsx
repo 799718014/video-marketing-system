@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Video, FileText, Package, Download, ChevronRight, Clock, LayoutTemplate, Image as ImageIcon } from 'lucide-react'
+import { Video, FileText, Package, Download, ChevronRight, Clock, LayoutTemplate, Image as ImageIcon, Film } from 'lucide-react'
 import type { ProductInfo, ScriptResult, VideoTask, BatchVideoTask } from './types'
 import Step1Product from './pages/Step1Product'
 import Step2Script from './pages/Step2Script'
@@ -8,6 +8,7 @@ import Step4Download from './pages/Step4Download'
 import History from './pages/History'
 import TemplateLibrary from './pages/TemplateLibrary'
 import Image2Video from './pages/Image2Video'
+import VideoLibrary from './pages/VideoLibrary'
 
 const STEPS = [
   { label: '商品信息', icon: Package },
@@ -16,7 +17,7 @@ const STEPS = [
   { label: '下载发布', icon: Download },
 ]
 
-type Page = 'generator' | 'history' | 'template' | 'image2video'
+type Page = 'generator' | 'history' | 'template' | 'image2video' | 'video-library'
 
 export default function App() {
   const [page, setPage] = useState<Page>('generator')
@@ -67,6 +68,17 @@ export default function App() {
               图生视频
             </button>
             <button
+              onClick={() => setPage('video-library')}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 ${
+                page === 'video-library'
+                  ? 'bg-brand-500 text-white'
+                  : 'text-gray-600 hover:bg-gray-100'
+              }`}
+            >
+              <Film size={16} />
+              视频库
+            </button>
+            <button
               onClick={() => setPage('history')}
               className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 ${
                 page === 'history'
@@ -101,6 +113,8 @@ export default function App() {
           <div className="max-w-5xl mx-auto px-6 py-8">
             <Image2Video onBack={() => setPage('generator')} />
           </div>
+        ) : page === 'video-library' ? (
+          <VideoLibrary />
         ) : (
           <div className="max-w-5xl mx-auto px-6 py-8">
             {/* Stepper */}
