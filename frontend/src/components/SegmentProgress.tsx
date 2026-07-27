@@ -10,8 +10,9 @@ interface Props {
 const STATUS_CONFIG = {
   pending: { icon: Loader2, color: 'text-gray-400', bg: 'bg-gray-100', label: '等待中', animate: false },
   processing: { icon: Loader2, color: 'text-blue-600', bg: 'bg-blue-50', label: '生成中', animate: true },
-  succeed: { icon: CheckCircle2, color: 'text-green-600', bg: 'bg-green-50', label: '已完成' },
-  failed: { icon: XCircle, color: 'text-red-600', bg: 'bg-red-50', label: '失败' },
+  // 所有状态都显式定义 animate，避免联合类型访问时出现类型错误。
+  succeed: { icon: CheckCircle2, color: 'text-green-600', bg: 'bg-green-50', label: '已完成', animate: false },
+  failed: { icon: XCircle, color: 'text-red-600', bg: 'bg-red-50', label: '失败', animate: false },
 }
 
 export default function SegmentProgress({ segment, onPreview, onRetry }: Props) {

@@ -25,6 +25,8 @@ const STATUS_MAP = {
   submitted: { label: '已提交', color: 'text-blue-600', bg: 'bg-blue-50' },
   processing: { label: '生成中...', color: 'text-amber-600', bg: 'bg-amber-50' },
   succeed: { label: '生成成功', color: 'text-green-600', bg: 'bg-green-50' },
+  // 图生视频接口使用 succeeded，兼容两类可灵任务状态。
+  succeeded: { label: '生成成功', color: 'text-green-600', bg: 'bg-green-50' },
   failed: { label: '生成失败', color: 'text-red-600', bg: 'bg-red-50' },
   merging: { label: '合并视频...', color: 'text-purple-600', bg: 'bg-purple-50' },
 }

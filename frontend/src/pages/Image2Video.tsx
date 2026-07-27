@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import axios from 'axios'
 import { Upload, Play, XCircle, CheckCircle2, AlertCircle, Loader2, Download, RefreshCw, Image as ImageIcon } from 'lucide-react'
 import type { AspectRatio, VideoTask } from '../types'
 import { createImage2Video, getImage2VideoStatus } from '../api'
@@ -34,6 +35,15 @@ const PROMPT_EXAMPLES = [
   "背景中的花瓣缓缓飘落，营造出梦幻般的氛围",
 ]
 
+// 优先展示后端返回的中文错误详情，避免用户只看到笼统的 HTTP 状态码。
+const getRequestErrorMessage = (error: unknown, fallback: string) => {
+  if (axios.isAxiosError(error)) {
+    const detail = error.response?.data?.detail
+    if (typeof detail === 'string') return detail
+  }
+  return error instanceof Error ? error.message : fallback
+}
+
 export default function Image2Video({ onBack }: Props) {
   const [imageUrl, setImageUrl] = useState('')
   const [previewUrl, setPreviewUrl] = useState('')
@@ -68,8 +78,13 @@ export default function Image2Video({ onBack }: Props) {
           clearInterval(pollRef.current!)
           pollRef.current = null
         }
-      } catch {
-        // 忽略轮询错误
+      } catch (e) {
+        // 轮询失败时立即结束任务，避免空任务 ID 或 404 导致页面无限转圈。
+        const message = getRequestErrorMessage(e, '图生视频状态查询失败，请稍后重试')
+        setTask((current) => current ? { ...current, status: 'failed', error: message } : current)
+        setError(message)
+        clearInterval(pollRef.current!)
+        pollRef.current = null
       }
     }, 3000)
   }
@@ -141,10 +156,14 @@ export default function Image2Video({ onBack }: Props) {
         aspect_ratio: ratio,
         watermark_enabled: watermarkEnabled,
       })
+      // 没有任务 ID 时不能轮询；主动报错可避免请求 /status/ 产生 404。
+      if (!created.task_id) {
+        throw new Error('图生视频任务创建失败：服务未返回任务 ID')
+      }
       setTask(created)
       startPolling(created.task_id)
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : '图生视频创建失败，请检查API配置'
+      const msg = getRequestErrorMessage(e, '图生视频创建失败，请检查 API 配置')
       setError(msg)
     } finally {
       setLoading(false)

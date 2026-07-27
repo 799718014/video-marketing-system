@@ -1,6 +1,15 @@
 import axios from 'axios'
 import type { ProductInfo, ScriptResult, VideoTask, BatchVideoTask, ScriptHistory, ScriptHistoryDetail, Template, TemplateDetail, HistoryStats, Image2VideoCreateRequest, Image2VideoResult } from './types'
 
+// 页面和测试可从 API 模块统一获取接口相关的领域类型。
+export type {
+  BatchVideoTask,
+  Image2VideoResult,
+  ScriptResult,
+  Template,
+  TemplateDetail,
+}
+
 const http = axios.create({ baseURL: '/api' })
 
 export interface ScriptRequest {

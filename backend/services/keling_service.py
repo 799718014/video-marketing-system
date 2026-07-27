@@ -137,10 +137,13 @@ async def create_image2video(req: Image2VideoCreateRequest) -> VideoTask:
         raise RuntimeError(f"可灵图生视频业务错误: {msg}")
 
     task_data = data.get("data", {})
-    return VideoTask(
-        task_id=task_data.get("id", ""),
-        status=task_data.get("status", "submitted"),
-    )
+    # 可灵原生接口返回 task_id/task_status，部分兼容网关返回 id/status，统一兼容两种格式。
+    task_id = task_data.get("task_id") or task_data.get("id")
+    status = task_data.get("task_status") or task_data.get("status") or "submitted"
+    if not task_id:
+        raise RuntimeError(f"图生视频接口未返回任务 ID: {data}")
+
+    return VideoTask(task_id=task_id, status=status)
 
 
 async def get_image2video_status(task_id: str) -> VideoTask:
@@ -157,19 +160,21 @@ async def get_image2video_status(task_id: str) -> VideoTask:
         data = resp.json()
 
     task_data = data.get("data", {})
-    status = task_data.get("status", "processing")
+    # 查询接口同样兼容原生 task_status 与网关 status 字段，避免状态被误判为 processing。
+    status = task_data.get("task_status") or task_data.get("status") or "processing"
 
     video_url = None
     cover_url = None
     error = None
 
-    if status == "succeeded":
-        works = task_data.get("works", [])
+    if status in {"succeed", "succeeded"}:
+        # 原生接口的视频结果位于 task_result.videos，兼容网关则通常放在 works 中。
+        works = task_data.get("works") or task_data.get("task_result", {}).get("videos", [])
         if works:
             video_url = works[0].get("url")
             cover_url = works[0].get("cover_image_url")
     elif status == "failed":
-        error = task_data.get("message", "图生视频失败")
+        error = task_data.get("task_status_msg") or task_data.get("message", "图生视频生成失败")
 
     return VideoTask(
         task_id=task_id,

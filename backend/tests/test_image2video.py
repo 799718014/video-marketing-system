@@ -54,6 +54,29 @@ def test_image2video_create(mock_client_class):
 
 
 @patch("services.keling_service.httpx.AsyncClient")
+def test_image2video_create_with_native_task_fields(mock_client_class):
+    """兼容可灵原生接口的 task_id/task_status 字段，防止前端轮询空任务 ID。"""
+    mock_response = AsyncMock()
+    mock_response.is_success = True
+    mock_response.json.return_value = {
+        "code": 0,
+        "data": {"task_id": "native_task_123", "task_status": "submitted"},
+    }
+    mock_client = AsyncMock()
+    mock_client.post.return_value = mock_response
+    mock_client_class.return_value.__aenter__.return_value = mock_client
+
+    from services import keling_service
+
+    task = asyncio.run(keling_service.create_image2video(
+        Image2VideoCreateRequest(image_url="https://example.com/image.jpg", prompt="让画面动起来")
+    ))
+
+    assert task.task_id == "native_task_123"
+    assert task.status == "submitted"
+
+
+@patch("services.keling_service.httpx.AsyncClient")
 def test_image2video_status_succeeded(mock_client_class):
     """测试图生视频状态 - 成功"""
     mock_response = AsyncMock()
@@ -81,6 +104,35 @@ def test_image2video_status_succeeded(mock_client_class):
     assert task.status == "succeeded"
     assert task.video_url == "https://example.com/video.mp4"
     assert task.cover_url == "https://example.com/cover.jpg"
+
+
+@patch("services.keling_service.httpx.AsyncClient")
+def test_image2video_status_with_native_result(mock_client_class):
+    """兼容可灵原生查询结果中的 task_result.videos 结构。"""
+    mock_response = AsyncMock()
+    mock_response.is_success = True
+    mock_response.json.return_value = {
+        "code": 0,
+        "data": {
+            "task_status": "succeed",
+            "task_result": {
+                "videos": [{
+                    "url": "https://example.com/native-video.mp4",
+                    "cover_image_url": "https://example.com/native-cover.jpg",
+                }]
+            },
+        },
+    }
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+    mock_client_class.return_value.__aenter__.return_value = mock_client
+
+    from services import keling_service
+
+    task = asyncio.run(keling_service.get_image2video_status("native_task_123"))
+
+    assert task.status == "succeed"
+    assert task.video_url == "https://example.com/native-video.mp4"
 
 
 @patch("services.keling_service.httpx.AsyncClient")

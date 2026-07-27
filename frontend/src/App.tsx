@@ -172,9 +172,10 @@ export default function App() {
           />
         )}
         {step === 3 && (videoTask || batchTask) && (
+          // 组件可选属性不接受 null，未创建的任务统一传 undefined。
           <Step4Download
-            task={videoTask}
-            batchTask={batchTask}
+            task={videoTask ?? undefined}
+            batchTask={batchTask ?? undefined}
             onRestart={() => {
               setStep(0)
               setProduct(null)
