@@ -14,7 +14,11 @@ from compositor import CompositionError, compositor
 from config import KELING_IMAGE_TO_VIDEO_MODEL, MAX_PROVIDER_PARALLEL, OUTPUT_DIR, PUBLIC_BASE_URL, UPLOAD_DIR, ensure_directories
 from database import db
 from keling import keling
-from schemas import AssetType, ProductAssetCreate, ProductCreate, StoryboardCreate, StoryboardSceneUpdate
+from quality_service import quality_reviewer
+from schemas import (
+    AssetType, CandidateSelectionRequest, CandidateTaskRequest, ManualQualityReviewRequest,
+    ProductAssetCreate, ProductCreate, StoryboardCreate, StoryboardSceneUpdate,
+)
 
 
 ensure_directories()
@@ -64,6 +68,14 @@ def verify_postprocess_assets(config: dict, product_id: int) -> None:
             raise HTTPException(status_code=422, detail=f"{field} 不属于当前商品")
         if asset["asset_type"] != expected_type:
             raise HTTPException(status_code=422, detail=f"{field} 必须引用 {expected_type} 类型资产")
+
+
+def verify_reference_assets(references: list[dict], product_id: int) -> None:
+    """多参考图只能绑定当前商品资产，确保候选生成和质检可完整追溯。"""
+    for reference in references:
+        asset = db.get_asset(reference["asset_id"])
+        if not asset or asset["product_id"] != product_id:
+            raise HTTPException(status_code=422, detail=f"参考资产 #{reference['asset_id']} 不属于当前商品")
 
 
 def require_public_asset_url(url: str) -> None:
@@ -147,6 +159,7 @@ def create_storyboard(product_id: int, payload: StoryboardCreate) -> dict:
     for scene in scenes:
         if scene["generation_strategy"] == "image_to_video":
             verify_asset_belongs_to_product(scene.get("asset_id"), product_id)
+        verify_reference_assets(scene.get("reference_assets", []), product_id)
         verify_postprocess_assets(scene.get("postprocess_config", {}), product_id)
     return db.create_storyboard(product_id, payload.title, scenes)
 
@@ -166,6 +179,8 @@ def update_scene(scene_id: int, payload: StoryboardSceneUpdate) -> dict:
         verify_asset_belongs_to_product(values["asset_id"], scene["product_id"])
     if values.get("postprocess_config") is not None:
         verify_postprocess_assets(values["postprocess_config"], scene["product_id"])
+    if values.get("reference_assets") is not None:
+        verify_reference_assets(values["reference_assets"], scene["product_id"])
     updated = db.update_scene(scene_id, values)
     return updated
 
@@ -181,6 +196,23 @@ def queue_generation_tasks(storyboard_id: int) -> list[dict]:
     return db.queue_storyboard_tasks(storyboard_id, KELING_IMAGE_TO_VIDEO_MODEL)
 
 
+@app.post("/api/storyboards/{storyboard_id}/candidate-tasks", status_code=201)
+def queue_candidate_tasks(storyboard_id: int, payload: CandidateTaskRequest) -> list[dict]:
+    """为每个分镜创建可人工对比的候选片段组，最多四个候选，避免无限并发。"""
+    storyboard = require_storyboard(storyboard_id)
+    for scene in storyboard["scenes"]:
+        if scene["generation_strategy"] != "image_to_video":
+            continue
+        if not scene["asset_url"]:
+            raise HTTPException(status_code=422, detail=f"分镜 {scene['scene_no']} 未关联商品图")
+        require_public_asset_url(scene["asset_url"])
+        for reference in scene["reference_assets"]:
+            require_public_asset_url(reference["url"])
+    return db.queue_storyboard_tasks(
+        storyboard_id, KELING_IMAGE_TO_VIDEO_MODEL, payload.candidate_count, payload.force_new,
+    )
+
+
 @app.post("/api/storyboards/{storyboard_id}/dispatch-next")
 async def dispatch_next_task(storyboard_id: int) -> dict:
     require_storyboard(storyboard_id)
@@ -191,7 +223,8 @@ async def dispatch_next_task(storyboard_id: int) -> dict:
         return {"status": "queue_empty", "message": "没有待提交的图生视频任务"}
     require_public_asset_url(task["image_url"])
     try:
-        result = await keling.create_image_to_video(task["image_url"], task["prompt"], task["model"])
+        reference_urls = [reference["url"] for reference in task.get("reference_manifest", [])]
+        result = await keling.create_image_to_video(task["image_url"], task["prompt"], task["model"], reference_urls)
     except Exception as error:
         # 资源不足或临时网络错误保留 queued 状态，稍后可再次调度。
         db.update_generation_task(task["id"], error=str(error))
@@ -213,6 +246,50 @@ def get_generation_task(task_id: int) -> dict:
 def list_generation_tasks(storyboard_id: int) -> list[dict]:
     require_storyboard(storyboard_id)
     return db.list_generation_tasks(storyboard_id)
+
+
+@app.post("/api/generation-tasks/{task_id}/select")
+def select_generation_candidate(task_id: int, payload: CandidateSelectionRequest) -> dict:
+    task = db.get_generation_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="生成任务不存在")
+    if not task.get("video_url"):
+        raise HTTPException(status_code=409, detail="候选片段尚未生成完成，不能选片")
+    selected = db.select_candidate(task_id, payload.reviewer, payload.note)
+    return selected or task
+
+
+@app.post("/api/generation-tasks/{task_id}/quality-review")
+async def run_quality_review(task_id: int) -> dict:
+    context = db.get_quality_context(task_id)
+    if not context:
+        raise HTTPException(status_code=404, detail="生成任务不存在")
+    try:
+        review = await quality_reviewer.inspect(context)
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail=str(error))
+    saved = db.save_quality_check(task_id, review)
+    return {"task": saved, "review": review}
+
+
+@app.post("/api/generation-tasks/{task_id}/quality-review/manual")
+def save_manual_quality_review(task_id: int, payload: ManualQualityReviewRequest) -> dict:
+    task = db.get_generation_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="生成任务不存在")
+    saved = db.save_quality_check(task_id, {
+        "engine": "manual_review", "status": "completed", "reviewer": payload.reviewer,
+        "product_similarity_score": payload.product_similarity_score, "logo_status": payload.logo_status,
+        "ocr_status": payload.ocr_status, "decision": payload.decision, "summary": payload.note or "人工质检完成",
+        "details": payload.model_dump(),
+    })
+    return saved or task
+
+
+@app.get("/api/storyboards/{storyboard_id}/trace")
+def get_storyboard_trace(storyboard_id: int) -> list[dict]:
+    require_storyboard(storyboard_id)
+    return db.get_storyboard_trace(storyboard_id)
 
 
 @app.post("/api/generation-tasks/{task_id}/refresh")
@@ -250,6 +327,9 @@ def compose_generation_task(task_id: int) -> dict:
 def compose_final_video(storyboard_id: int) -> dict:
     """按分镜顺序拼接已完成后期合成的片段，得到可直接发布的最终视频。"""
     require_storyboard(storyboard_id)
+    unselected_scenes = db.list_unselected_candidate_scenes(storyboard_id)
+    if unselected_scenes:
+        raise HTTPException(status_code=409, detail=f"分镜 {', '.join(map(str, unselected_scenes))} 存在候选片段，请先人工选片")
     tasks = db.list_storyboard_composed_tasks(storyboard_id)
     db.update_storyboard_final(storyboard_id, final_composition_status="processing", final_composition_error=None)
     try:

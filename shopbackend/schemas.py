@@ -29,6 +29,20 @@ class GenerationStrategy(str, Enum):
     template_composite = "template_composite"
 
 
+class ReferenceRole(str, Enum):
+    identity = "identity"
+    material = "material"
+    detail = "detail"
+    element = "element"
+    logo = "logo"
+
+
+class SceneReferenceCreate(BaseModel):
+    asset_id: int
+    role: ReferenceRole = ReferenceRole.identity
+    sort_order: int = Field(default=0, ge=0, le=99)
+
+
 class PostprocessConfig(BaseModel):
     """确定性后期模板参数，不允许把品牌、价格和字幕交给模型生成。"""
 
@@ -64,6 +78,7 @@ class StoryboardSceneCreate(BaseModel):
     generation_strategy: GenerationStrategy = GenerationStrategy.image_to_video
     motion_prompt: str = Field(default="", max_length=2000)
     identity_constraints: list[str] = Field(default_factory=list)
+    reference_assets: list[SceneReferenceCreate] = Field(default_factory=list, max_length=8)
     postprocess_layers: list[str] = Field(
         default_factory=lambda: ["transparent_product", "brand_logo", "subtitle", "price_tag", "cta"]
     )
@@ -82,5 +97,25 @@ class StoryboardSceneUpdate(BaseModel):
     generation_strategy: Optional[GenerationStrategy] = None
     motion_prompt: Optional[str] = Field(default=None, max_length=2000)
     identity_constraints: Optional[list[str]] = None
+    reference_assets: Optional[list[SceneReferenceCreate]] = Field(default=None, max_length=8)
     postprocess_layers: Optional[list[str]] = None
     postprocess_config: Optional[PostprocessConfig] = None
+
+
+class CandidateTaskRequest(BaseModel):
+    candidate_count: int = Field(default=3, ge=1, le=4)
+    force_new: bool = False
+
+
+class CandidateSelectionRequest(BaseModel):
+    reviewer: Optional[str] = Field(default=None, max_length=80)
+    note: Optional[str] = Field(default=None, max_length=500)
+
+
+class ManualQualityReviewRequest(BaseModel):
+    reviewer: str = Field(min_length=1, max_length=80)
+    product_similarity_score: Optional[float] = Field(default=None, ge=0, le=1)
+    logo_status: Literal["pass", "fail", "not_applicable"] = "not_applicable"
+    ocr_status: Literal["pass", "fail", "not_applicable"] = "not_applicable"
+    decision: Literal["pass", "review", "reject"] = "review"
+    note: Optional[str] = Field(default=None, max_length=1000)

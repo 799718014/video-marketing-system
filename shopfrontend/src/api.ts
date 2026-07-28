@@ -28,6 +28,15 @@ export interface PostprocessConfig {
   logo_asset_id?: number
 }
 
+export interface SceneReference {
+  id?: number
+  asset_id: number
+  role: 'identity' | 'material' | 'detail' | 'element' | 'logo'
+  sort_order: number
+  asset_type?: AssetType
+  url?: string
+}
+
 export interface Scene {
   id?: number
   scene_no: number
@@ -38,6 +47,7 @@ export interface Scene {
   generation_strategy: 'image_to_video'
   motion_prompt: string
   identity_constraints: string[]
+  reference_assets: SceneReference[]
   postprocess_layers: string[]
   postprocess_config: PostprocessConfig
 }
@@ -62,7 +72,23 @@ export interface GenerationTask {
   composed_video_url?: string | null
   composition_status?: string
   composition_error?: string | null
+  candidate_group_id?: string | null
+  candidate_index?: number
+  selected?: number | boolean
+  reference_manifest?: SceneReference[]
+  quality_status?: string
+  quality_decision?: string | null
   error?: string | null
+}
+
+export interface TraceEvent {
+  id: number
+  event_type: string
+  created_at: string
+  task_id?: number | null
+  scene_id?: number | null
+  asset_id?: number | null
+  payload: Record<string, unknown>
 }
 
 const defaultBaseUrl = import.meta.env.VITE_SHOP_API_BASE ?? 'http://localhost:8010'
@@ -106,9 +132,17 @@ export const api = {
   }),
   getStoryboard: (id: number) => request<Storyboard>(`/api/storyboards/${id}`),
   queueTasks: (id: number) => request<GenerationTask[]>(`/api/storyboards/${id}/generation-tasks`, { method: 'POST' }),
+  queueCandidates: (id: number, candidateCount: number, forceNew = false) => request<GenerationTask[]>(`/api/storyboards/${id}/candidate-tasks`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ candidate_count: candidateCount, force_new: forceNew }),
+  }),
   listTasks: (id: number) => request<GenerationTask[]>(`/api/storyboards/${id}/generation-tasks`),
   dispatchNext: (id: number) => request<GenerationTask | { status: string; message: string }>(`/api/storyboards/${id}/dispatch-next`, { method: 'POST' }),
   refreshTask: (id: number) => request<GenerationTask>(`/api/generation-tasks/${id}/refresh`, { method: 'POST' }),
+  selectCandidate: (id: number, reviewer = 'operator', note?: string) => request<GenerationTask>(`/api/generation-tasks/${id}/select`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reviewer, note }),
+  }),
+  qualityReview: (id: number) => request<{ task: GenerationTask; review: { summary: string; decision: string } }>(`/api/generation-tasks/${id}/quality-review`, { method: 'POST' }),
+  getTrace: (id: number) => request<TraceEvent[]>(`/api/storyboards/${id}/trace`),
   composeTask: (id: number) => request<GenerationTask>(`/api/generation-tasks/${id}/compose`, { method: 'POST' }),
   composeFinal: (id: number) => request<Storyboard>(`/api/storyboards/${id}/compose-final`, { method: 'POST' }),
 }

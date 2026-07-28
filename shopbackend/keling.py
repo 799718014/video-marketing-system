@@ -4,7 +4,7 @@ import os
 
 import httpx
 
-from config import KELING_API_BASE
+from config import KELING_API_BASE, KELING_REFERENCE_IMAGES_FIELD
 
 
 class KelingClient:
@@ -17,7 +17,9 @@ class KelingClient:
             raise RuntimeError("KELING_API_KEY 未配置")
         return {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
-    async def create_image_to_video(self, image_url: str, prompt: str, model: str) -> dict:
+    async def create_image_to_video(
+        self, image_url: str, prompt: str, model: str, reference_image_urls: list[str] | None = None,
+    ) -> dict:
         payload = {
             "model": model,
             "image": image_url,
@@ -25,6 +27,8 @@ class KelingClient:
             "duration": 5,
             "aspect_ratio": "9:16",
         }
+        if KELING_REFERENCE_IMAGES_FIELD and reference_image_urls:
+            payload[KELING_REFERENCE_IMAGES_FIELD] = reference_image_urls
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.post(
                 f"{KELING_API_BASE}/v1/videos/image2video", headers=self._headers(), json=payload

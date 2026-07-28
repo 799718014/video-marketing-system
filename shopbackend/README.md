@@ -11,6 +11,9 @@
 - 图生视频任务队列与单任务调度，默认仅提交一个可灵任务；
 - P1 确定性合成：透明底商品图、Logo、字幕、价格和 CTA 均由模板渲染；
 - 统一编码后按分镜顺序拼接，输出可发布的最终视频。
+- P2 多参考图：主图、细节图、材质图和元素图按分镜角色关联，并随候选任务保存参考清单；
+- P2 候选评审：一个分镜可创建 2–4 个候选，人工选片后最终拼接优先采用被选中的候选；
+- P2 质检与追溯：预留商品相似度、Logo、OCR 质检服务接入，并记录资产、任务、选片、质检、合成和成片事件。
 
 ## 启动
 
@@ -28,6 +31,8 @@ uvicorn main:app --reload --port 8010
 
 P1 合成依赖 FFmpeg。生产环境应在镜像内安装 FFmpeg，并将 `FFMPEG_FONT_FILE` 配置为包含中文字符的字体文件。成片输出至 `data/outputs`，通过 `/outputs/{filename}` 提供访问。
 
+P2 自动视觉质检需配置 `QUALITY_REVIEW_URL`（可选 `QUALITY_REVIEW_API_KEY`）。该服务接收 `video_url`、`reference_assets` 与商品事实，并返回 `product_similarity_score`（0–1）、`logo_status`、`ocr_status` 和 `decision`。未配置时接口会明确返回 `manual_required`，由人工审核，绝不会生成虚假评分。若供应商网关支持多图请求，可配置 `KELING_REFERENCE_IMAGES_FIELD` 为对应字段名；未配置时服务安全使用主图提交，并保留全部参考图清单用于提示词、质检与追溯。
+
 ## 推荐调用顺序
 
 1. `POST /api/products` 创建商品事实；
@@ -38,6 +43,14 @@ P1 合成依赖 FFmpeg。生产环境应在镜像内安装 FFmpeg，并将 `FFMP
 6. `POST /api/generation-tasks/{id}/refresh` 查询可灵状态；任务结束后再调度下一项。
 7. 对每个已得到 `video_url` 的任务调用 `POST /api/generation-tasks/{id}/compose`；
 8. 全部分镜合成成功后调用 `POST /api/storyboards/{id}/compose-final` 获取最终成片。
+
+## P2 候选、质检与追溯
+
+1. 在分镜 `reference_assets` 中配置多张当前商品资产及其角色；
+2. `POST /api/storyboards/{id}/candidate-tasks`，请求体 `{"candidate_count": 3}`；
+3. 为候选轮流调用 `dispatch-next`、状态查询和 `POST /api/generation-tasks/{task_id}/quality-review`；
+4. 人工确认后调用 `POST /api/generation-tasks/{task_id}/select`；
+5. `GET /api/storyboards/{id}/trace` 获取从资产创建到最终成片的审计事件。
 
 ## 分镜示例
 

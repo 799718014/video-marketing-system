@@ -1,6 +1,6 @@
 import { FormEvent, useMemo, useState } from 'react'
 import {
-  api, AssetType, GenerationTask, getApiBase, PostprocessConfig, Product, ProductAsset, Scene, setApiBase, Storyboard,
+  api, AssetType, GenerationTask, getApiBase, PostprocessConfig, Product, ProductAsset, Scene, SceneReference, setApiBase, Storyboard, TraceEvent,
 } from './api'
 
 const layerOptions = [
@@ -23,6 +23,7 @@ function createDraftScene(sceneNo: number, assets: ProductAsset[]): Scene {
     generation_strategy: 'image_to_video',
     motion_prompt: '镜头缓慢推进，保持商品形状、材质、颜色和比例不变，突出真实商品细节。',
     identity_constraints: ['保持参考图中商品的形状、材质、颜色和比例', '不得增加、删除或替换商品部件'],
+    reference_assets: main ? [{ asset_id: main.id, role: 'identity', sort_order: 0 }] : [],
     postprocess_layers: ['transparent_product', 'brand_logo', 'subtitle', 'price_tag', 'cta'],
     postprocess_config: {
       template: 'product_promo_portrait', transparent_asset_id: transparent?.id, logo_asset_id: logo?.id, cta: '立即购买',
@@ -40,6 +41,7 @@ export default function App() {
   const [assets, setAssets] = useState<ProductAsset[]>([])
   const [storyboard, setStoryboard] = useState<Storyboard | null>(null)
   const [tasks, setTasks] = useState<GenerationTask[]>([])
+  const [traceEvents, setTraceEvents] = useState<TraceEvent[]>([])
   const [notice, setNotice] = useState('请先创建商品并上传真实商品资产。')
   const [busy, setBusy] = useState<string | null>(null)
   const [loadProductId, setLoadProductId] = useState('')
@@ -48,6 +50,7 @@ export default function App() {
   const [assetFile, setAssetFile] = useState<File | null>(null)
   const [storyboardTitle, setStoryboardTitle] = useState('商品短视频分镜')
   const [draftScenes, setDraftScenes] = useState<Scene[]>([])
+  const [candidateCount, setCandidateCount] = useState(3)
 
   const transparentAssets = useMemo(() => assets.filter((asset) => asset.asset_type === 'transparent'), [assets])
   const logoAssets = useMemo(() => assets.filter((asset) => asset.asset_type === 'logo'), [assets])
@@ -128,6 +131,29 @@ export default function App() {
     updateScene(index, { postprocess_layers: enabled ? scene.postprocess_layers.filter((item) => item !== layer) : [...scene.postprocess_layers, layer] })
   }
 
+  function toggleReference(index: number, asset: ProductAsset) {
+    const scene = draftScenes[index]
+    const exists = scene.reference_assets.some((reference) => reference.asset_id === asset.id)
+    const referenceAssets: SceneReference[] = exists
+      ? scene.reference_assets.filter((reference) => reference.asset_id !== asset.id)
+      : [...scene.reference_assets, { asset_id: asset.id, role: asset.id === scene.asset_id ? 'identity' : 'detail', sort_order: scene.reference_assets.length }]
+    updateScene(index, { reference_assets: referenceAssets })
+  }
+
+  function updateReferenceRole(index: number, assetId: number, role: SceneReference['role']) {
+    const referenceAssets = draftScenes[index].reference_assets.map((reference) => reference.asset_id === assetId ? { ...reference, role } : reference)
+    updateScene(index, { reference_assets: referenceAssets })
+  }
+
+  function selectMainAsset(index: number, assetId: number) {
+    const scene = draftScenes[index]
+    const existing = scene.reference_assets.filter((reference) => reference.asset_id !== assetId)
+    updateScene(index, {
+      asset_id: assetId,
+      reference_assets: [{ asset_id: assetId, role: 'identity', sort_order: 0 }, ...existing.map((reference, sortOrder) => ({ ...reference, sort_order: sortOrder + 1 }))],
+    })
+  }
+
   function saveStoryboard() {
     if (!product) return setNotice('请先创建或加载商品')
     void run('storyboard', async () => {
@@ -144,6 +170,15 @@ export default function App() {
       const created = await api.queueTasks(storyboard.id)
       await refreshBoard()
       setNotice(created.length ? `已创建 ${created.length} 个图生视频任务。` : '没有新增任务；已有任务仍在队列或处理中。')
+    })
+  }
+
+  function queueCandidates() {
+    if (!storyboard) return
+    void run('candidates', async () => {
+      const created = await api.queueCandidates(storyboard.id, candidateCount)
+      await refreshBoard()
+      setNotice(created.length ? `已创建 ${created.length} 个候选任务，请逐个提交并选片。` : '当前仍有活跃任务；请等待后再次创建候选。')
     })
   }
 
@@ -165,6 +200,26 @@ export default function App() {
   function composeTask(task: GenerationTask) {
     void run(`compose-${task.id}`, async () => {
       await api.composeTask(task.id); await refreshBoard(); setNotice(`任务 #${task.id} 已完成确定性后期合成。`)
+    })
+  }
+
+  function selectCandidate(task: GenerationTask) {
+    void run(`select-${task.id}`, async () => {
+      await api.selectCandidate(task.id); await refreshBoard(); setNotice(`已选定候选任务 #${task.id}，最终合并将优先使用该片段。`)
+    })
+  }
+
+  function qualityReview(task: GenerationTask) {
+    void run(`quality-${task.id}`, async () => {
+      const result = await api.qualityReview(task.id); await refreshBoard(); setNotice(result.review.summary)
+    })
+  }
+
+  function loadTrace() {
+    if (!storyboard) return
+    void run('trace', async () => {
+      const events = await api.getTrace(storyboard.id)
+      setTraceEvents(events); setNotice(`已加载 ${events.length} 条追溯事件。`)
     })
   }
 
@@ -215,11 +270,12 @@ export default function App() {
         <div className="scene-list">{draftScenes.map((scene, index) => <article className="scene" key={index}>
           <div className="scene-head"><b>分镜 {scene.scene_no}</b><button className="text-button" onClick={() => setDraftScenes((items) => items.filter((_, itemIndex) => itemIndex !== index).map((item, itemIndex) => ({ ...item, scene_no: itemIndex + 1 })))} disabled={draftScenes.length === 1}>删除</button></div>
           <div className="form-grid compact">
-            <label>商品图<select value={scene.asset_id ?? ''} onChange={(event) => updateScene(index, { asset_id: Number(event.target.value) })}><option value="">请选择</option>{assets.filter((asset) => asset.asset_type !== 'logo').map((asset) => <option value={asset.id} key={asset.id}>#{asset.id} · {asset.asset_type}</option>)}</select></label>
+            <label>商品主图<select value={scene.asset_id ?? ''} onChange={(event) => selectMainAsset(index, Number(event.target.value))}><option value="">请选择</option>{assets.filter((asset) => asset.asset_type !== 'logo').map((asset) => <option value={asset.id} key={asset.id}>#{asset.id} · {asset.asset_type}</option>)}</select></label>
             <label>镜头类型<select value={scene.scene_type} onChange={(event) => updateScene(index, { scene_type: event.target.value })}><option value="product_closeup">商品特写</option><option value="product_hero">主商品展示</option><option value="lifestyle_use">场景使用</option><option value="cta">行动召唤</option></select></label>
             <label>时长<input type="number" min="1" max="5" value={scene.target_duration} onChange={(event) => updateScene(index, { target_duration: Number(event.target.value) })} /></label>
             <label className="wide">运动提示词<textarea value={scene.motion_prompt} onChange={(event) => updateScene(index, { motion_prompt: event.target.value })} /></label>
           </div>
+          <div className="reference-box"><b>P2 多参考图 / 元素一致性</b><p>主图作为 identity 参考；可增加细节、材质和元素图，候选任务会保存完整参考清单。</p><div className="reference-grid">{assets.filter((asset) => asset.asset_type !== 'transparent').map((asset) => { const reference = scene.reference_assets.find((item) => item.asset_id === asset.id); return <div className="reference-item" key={asset.id}><label><input type="checkbox" checked={Boolean(reference)} onChange={() => toggleReference(index, asset)} />#{asset.id} · {asset.asset_type}</label>{reference && <select value={reference.role} onChange={(event) => updateReferenceRole(index, asset.id, event.target.value as SceneReference['role'])}><option value="identity">身份</option><option value="material">材质</option><option value="detail">细节</option><option value="element">元素</option><option value="logo">Logo</option></select>}</div> })}</div></div>
           <div className="template-box"><b>确定性后期模板</b><div className="checks">{layerOptions.map(([value, text]) => <label key={value}><input type="checkbox" checked={scene.postprocess_layers.includes(value)} onChange={() => toggleLayer(index, value)} />{text}</label>)}</div>
             <div className="form-grid compact"><label>字幕<input value={scene.postprocess_config.subtitle ?? ''} onChange={(event) => updateConfig(index, { subtitle: event.target.value })} placeholder="默认使用第一条卖点" /></label><label>价格文字<input value={scene.postprocess_config.price_text ?? ''} onChange={(event) => updateConfig(index, { price_text: event.target.value })} placeholder="默认使用商品价格" /></label><label>CTA<input value={scene.postprocess_config.cta ?? ''} onChange={(event) => updateConfig(index, { cta: event.target.value })} /></label><label>透明商品图<select value={scene.postprocess_config.transparent_asset_id ?? ''} onChange={(event) => updateConfig(index, { transparent_asset_id: Number(event.target.value) || undefined })}><option value="">自动选择</option>{transparentAssets.map((asset) => <option key={asset.id} value={asset.id}>#{asset.id}</option>)}</select></label><label>Logo<select value={scene.postprocess_config.logo_asset_id ?? ''} onChange={(event) => updateConfig(index, { logo_asset_id: Number(event.target.value) || undefined })}><option value="">自动选择</option>{logoAssets.map((asset) => <option key={asset.id} value={asset.id}>#{asset.id}</option>)}</select></label></div>
           </div>
@@ -228,9 +284,10 @@ export default function App() {
       </section>
 
       <section className="card tasks-card">
-        <div className="section-title"><span>04</span><div><h2>任务面板与最终预览</h2><p>先完成图生视频，再进行透明商品图与文字模板的确定性合成。</p></div></div>
-        <div className="actions"><button onClick={queueTasks} disabled={!storyboard || disabled}>创建任务</button><button onClick={dispatchNext} disabled={!storyboard || disabled}>提交下一个任务</button><button onClick={() => void run('reload', async () => { await refreshBoard(); setNotice('任务状态已同步。') })} disabled={!storyboard || disabled}>刷新面板</button><button className="primary" onClick={composeFinal} disabled={!storyboard || disabled}>合并最终视频</button></div>
-        <div className="task-list">{tasks.length ? tasks.map((task) => <article className="task" key={task.id}><div><b>分镜 {task.scene_no} · 任务 #{task.id}</b><p><span className={`badge ${task.status}`}>图生：{task.status}</span><span className={`badge ${task.composition_status}`}>后期：{task.composition_status ?? 'not_started'}</span></p>{(task.error || task.composition_error) && <p className="error">{task.error || task.composition_error}</p>}<div className="task-actions"><button onClick={() => refreshTask(task)} disabled={disabled}>查询图生状态</button><button onClick={() => composeTask(task)} disabled={disabled || !task.video_url}>后期合成</button></div></div>{(task.composed_video_url || task.video_url) && <video controls src={task.composed_video_url || task.video_url || undefined} />}</article>) : <p className="empty">保存分镜后，可在这里创建和管理任务。</p>}</div>
+        <div className="section-title"><span>04</span><div><h2>P2 候选评审、质检与最终预览</h2><p>候选片段经人工选片和商品一致性质检后，再进入确定性后期及最终合并。</p></div></div>
+        <div className="actions"><button onClick={queueTasks} disabled={!storyboard || disabled}>创建单任务</button><label className="candidate-count">候选数<select value={candidateCount} onChange={(event) => setCandidateCount(Number(event.target.value))}><option value={2}>2</option><option value={3}>3</option><option value={4}>4</option></select></label><button onClick={queueCandidates} disabled={!storyboard || disabled}>生成候选片段</button><button onClick={dispatchNext} disabled={!storyboard || disabled}>提交下一个任务</button><button onClick={() => void run('reload', async () => { await refreshBoard(); setNotice('任务状态已同步。') })} disabled={!storyboard || disabled}>刷新面板</button><button onClick={loadTrace} disabled={!storyboard || disabled}>查看追溯</button><button className="primary" onClick={composeFinal} disabled={!storyboard || disabled}>合并最终视频</button></div>
+        <div className="task-list">{tasks.length ? tasks.map((task) => <article className={`task ${task.selected ? 'selected-task' : ''}`} key={task.id}><div><b>分镜 {task.scene_no} · 候选 {task.candidate_index ?? 1} · 任务 #{task.id}</b><p><span className={`badge ${task.status}`}>图生：{task.status}</span><span className={`badge ${task.composition_status}`}>后期：{task.composition_status ?? 'not_started'}</span><span className={`badge ${task.quality_status}`}>质检：{task.quality_status ?? 'not_checked'}{task.quality_decision ? ` / ${task.quality_decision}` : ''}</span>{task.selected && <span className="badge succeeded">已选片</span>}</p>{task.reference_manifest?.length ? <p className="reference-summary">参考图：{task.reference_manifest.map((reference) => `${reference.role}#${reference.asset_id}`).join(' · ')}</p> : null}{(task.error || task.composition_error) && <p className="error">{task.error || task.composition_error}</p>}<div className="task-actions"><button onClick={() => refreshTask(task)} disabled={disabled}>查询图生状态</button><button onClick={() => qualityReview(task)} disabled={disabled || !task.video_url}>商品/Logo/OCR 质检</button><button onClick={() => selectCandidate(task)} disabled={disabled || !task.video_url}>选此片段</button><button onClick={() => composeTask(task)} disabled={disabled || !task.video_url}>后期合成</button></div></div>{(task.composed_video_url || task.video_url) && <video controls src={task.composed_video_url || task.video_url || undefined} />}</article>) : <p className="empty">保存分镜后，可在这里创建和管理任务。</p>}</div>
+        {traceEvents.length > 0 && <div className="trace-panel"><b>完整追溯记录</b>{traceEvents.map((event) => <p key={event.id}><time>{event.created_at}</time><span>{event.event_type}</span>{event.task_id ? ` · 任务 #${event.task_id}` : ''}{event.asset_id ? ` · 资产 #${event.asset_id}` : ''}</p>)}</div>}
         {storyboard?.final_video_url && <div className="final-video"><div><span className="eyebrow">PUBLISH READY</span><h3>最终成片</h3><a href={storyboard.final_video_url} target="_blank" rel="noreferrer">打开/下载视频</a></div><video controls src={storyboard.final_video_url} /></div>}
       </section>
     </div>
