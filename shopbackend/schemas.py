@@ -119,3 +119,8 @@ class ManualQualityReviewRequest(BaseModel):
     ocr_status: Literal["pass", "fail", "not_applicable"] = "not_applicable"
     decision: Literal["pass", "review", "reject"] = "review"
     note: Optional[str] = Field(default=None, max_length=1000)
+
+
+class KlingLibraryVideoImportRequest(BaseModel):
+    task_id: str = Field(min_length=1, max_length=120)
+    task_type: Literal["text2video", "image2video"]

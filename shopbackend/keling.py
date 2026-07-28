@@ -63,5 +63,60 @@ class KelingClient:
             "error": task.get("task_status_msg") or task.get("message"),
         }
 
+    @staticmethod
+    def _parse_library_item(task_data: dict, task_type: str) -> dict:
+        task_id = task_data.get("task_id") or task_data.get("id")
+        if not task_id:
+            raise RuntimeError(f"可灵视频库任务缺少 task_id: {task_data}")
+        status = task_data.get("task_status") or task_data.get("status") or "processing"
+        works = task_data.get("works") or task_data.get("task_result", {}).get("videos", [])
+        video = works[0] if works else {}
+        return {
+            "task_id": task_id,
+            "task_type": task_type,
+            "status": status,
+            "video_url": video.get("url"),
+            "cover_url": video.get("cover_image_url"),
+            "duration": video.get("duration"),
+            "created_at": task_data.get("created_at"),
+            "updated_at": task_data.get("updated_at"),
+            "error": (task_data.get("task_status_msg") or task_data.get("message")) if status == "failed" else None,
+        }
+
+    async def list_video_library(self, task_type: str, page_num: int, page_size: int) -> dict:
+        if task_type not in {"text2video", "image2video"}:
+            raise ValueError("视频库仅支持 text2video 或 image2video")
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.get(
+                f"{KELING_API_BASE}/v1/videos/{task_type}", headers=self._headers(),
+                params={"pageNum": page_num, "pageSize": page_size},
+            )
+        if not response.is_success:
+            raise RuntimeError(f"可灵视频库查询失败 {response.status_code}: {response.text}")
+        data = response.json()
+        if data.get("code", 0) != 0:
+            raise RuntimeError(f"可灵视频库业务错误: {data.get('message', data)}")
+        tasks = data.get("data") or []
+        if not isinstance(tasks, list):
+            raise RuntimeError(f"可灵视频库响应格式异常: {data}")
+        return {
+            "items": [self._parse_library_item(task, task_type) for task in tasks],
+            "page_num": page_num, "page_size": page_size, "task_type": task_type,
+        }
+
+    async def get_library_video(self, task_id: str, task_type: str) -> dict:
+        if task_type not in {"text2video", "image2video"}:
+            raise ValueError("视频库仅支持 text2video 或 image2video")
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.get(
+                f"{KELING_API_BASE}/v1/videos/{task_type}/{task_id}", headers=self._headers()
+            )
+        if not response.is_success:
+            raise RuntimeError(f"可灵视频库任务查询失败 {response.status_code}: {response.text}")
+        data = response.json()
+        if data.get("code", 0) != 0:
+            raise RuntimeError(f"可灵视频库任务业务错误: {data.get('message', data)}")
+        return self._parse_library_item(data.get("data", {}), task_type)
+
 
 keling = KelingClient()

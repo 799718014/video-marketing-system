@@ -1,6 +1,6 @@
 import { FormEvent, useMemo, useState } from 'react'
 import {
-  api, AssetType, GenerationTask, getApiBase, PostprocessConfig, Product, ProductAsset, Scene, SceneReference, setApiBase, Storyboard, TraceEvent,
+  api, AssetType, GenerationTask, getApiBase, KlingLibraryItem, PostprocessConfig, Product, ProductAsset, Scene, SceneReference, setApiBase, Storyboard, TraceEvent,
 } from './api'
 
 const layerOptions = [
@@ -51,6 +51,10 @@ export default function App() {
   const [storyboardTitle, setStoryboardTitle] = useState('商品短视频分镜')
   const [draftScenes, setDraftScenes] = useState<Scene[]>([])
   const [candidateCount, setCandidateCount] = useState(3)
+  const [libraryType, setLibraryType] = useState<'text2video' | 'image2video'>('image2video')
+  const [libraryItems, setLibraryItems] = useState<KlingLibraryItem[]>([])
+  const [libraryPage, setLibraryPage] = useState(1)
+  const [libraryTargetSceneId, setLibraryTargetSceneId] = useState<number | null>(null)
 
   const transparentAssets = useMemo(() => assets.filter((asset) => asset.asset_type === 'transparent'), [assets])
   const logoAssets = useMemo(() => assets.filter((asset) => asset.asset_type === 'logo'), [assets])
@@ -223,6 +227,23 @@ export default function App() {
     })
   }
 
+  function loadKlingLibrary(page = libraryPage) {
+    void run('library', async () => {
+      const result = await api.getKlingVideoLibrary(libraryType, page)
+      setLibraryItems(result.items); setLibraryPage(page)
+      setNotice(`已加载可灵视频库第 ${page} 页。`)
+    })
+  }
+
+  function importLibraryVideo(item: KlingLibraryItem) {
+    const sceneId = libraryTargetSceneId ?? storyboard?.scenes[0]?.id
+    if (!sceneId) return setNotice('请先保存分镜，并选择要导入的视频目标分镜。')
+    void run(`import-${item.task_id}`, async () => {
+      await api.importKlingVideo(sceneId, item.task_id, item.task_type)
+      await refreshBoard(); setNotice(`已将可灵任务 ${item.task_id} 导入为候选片段，请完成质检和选片。`)
+    })
+  }
+
   function composeFinal() {
     if (!storyboard) return
     void run('final', async () => {
@@ -286,6 +307,7 @@ export default function App() {
       <section className="card tasks-card">
         <div className="section-title"><span>04</span><div><h2>P2 候选评审、质检与最终预览</h2><p>候选片段经人工选片和商品一致性质检后，再进入确定性后期及最终合并。</p></div></div>
         <div className="actions"><button onClick={queueTasks} disabled={!storyboard || disabled}>创建单任务</button><label className="candidate-count">候选数<select value={candidateCount} onChange={(event) => setCandidateCount(Number(event.target.value))}><option value={2}>2</option><option value={3}>3</option><option value={4}>4</option></select></label><button onClick={queueCandidates} disabled={!storyboard || disabled}>生成候选片段</button><button onClick={dispatchNext} disabled={!storyboard || disabled}>提交下一个任务</button><button onClick={() => void run('reload', async () => { await refreshBoard(); setNotice('任务状态已同步。') })} disabled={!storyboard || disabled}>刷新面板</button><button onClick={loadTrace} disabled={!storyboard || disabled}>查看追溯</button><button className="primary" onClick={composeFinal} disabled={!storyboard || disabled}>合并最终视频</button></div>
+        <div className="library-panel"><div><b>可灵视频库候选导入</b><p>仅可导入当前可灵账号中已完成的视频；导入后仍需质检和人工选片，视频链接过期时请刷新或重新导入。</p></div><div className="library-toolbar"><label>类型<select value={libraryType} onChange={(event) => { setLibraryType(event.target.value as 'text2video' | 'image2video'); setLibraryPage(1); setLibraryItems([]) }}><option value="image2video">图生视频</option><option value="text2video">文生视频</option></select></label><label>导入到分镜<select value={libraryTargetSceneId ?? ''} onChange={(event) => setLibraryTargetSceneId(Number(event.target.value) || null)}><option value="">请选择分镜</option>{storyboard?.scenes.map((scene) => <option key={scene.id} value={scene.id}>分镜 {scene.scene_no}</option>)}</select></label><button onClick={() => loadKlingLibrary(1)} disabled={!storyboard || disabled}>加载可灵视频库</button></div>{libraryItems.length > 0 && <><div className="library-list">{libraryItems.map((item) => <article key={`${item.task_type}-${item.task_id}`}><video controls preload="metadata" src={item.video_url ?? undefined} poster={item.cover_url ?? undefined} /><b>{item.status === 'succeed' || item.status === 'succeeded' ? '已完成' : item.status}</b><small>{item.task_id}</small><button onClick={() => importLibraryVideo(item)} disabled={disabled || !item.video_url || !libraryTargetSceneId}>导入为候选</button></article>)}</div><div className="library-pagination"><button onClick={() => loadKlingLibrary(libraryPage - 1)} disabled={disabled || libraryPage === 1}>上一页</button><span>第 {libraryPage} 页</span><button onClick={() => loadKlingLibrary(libraryPage + 1)} disabled={disabled || libraryItems.length < 6}>下一页</button></div></>}</div>
         <div className="task-list">{tasks.length ? tasks.map((task) => <article className={`task ${task.selected ? 'selected-task' : ''}`} key={task.id}><div><b>分镜 {task.scene_no} · 候选 {task.candidate_index ?? 1} · 任务 #{task.id}</b><p><span className={`badge ${task.status}`}>图生：{task.status}</span><span className={`badge ${task.composition_status}`}>后期：{task.composition_status ?? 'not_started'}</span><span className={`badge ${task.quality_status}`}>质检：{task.quality_status ?? 'not_checked'}{task.quality_decision ? ` / ${task.quality_decision}` : ''}</span>{task.selected && <span className="badge succeeded">已选片</span>}</p>{task.reference_manifest?.length ? <p className="reference-summary">参考图：{task.reference_manifest.map((reference) => `${reference.role}#${reference.asset_id}`).join(' · ')}</p> : null}{(task.error || task.composition_error) && <p className="error">{task.error || task.composition_error}</p>}<div className="task-actions"><button onClick={() => refreshTask(task)} disabled={disabled}>查询图生状态</button><button onClick={() => qualityReview(task)} disabled={disabled || !task.video_url}>商品/Logo/OCR 质检</button><button onClick={() => selectCandidate(task)} disabled={disabled || !task.video_url}>选此片段</button><button onClick={() => composeTask(task)} disabled={disabled || !task.video_url}>后期合成</button></div></div>{(task.composed_video_url || task.video_url) && <video controls src={task.composed_video_url || task.video_url || undefined} />}</article>) : <p className="empty">保存分镜后，可在这里创建和管理任务。</p>}</div>
         {traceEvents.length > 0 && <div className="trace-panel"><b>完整追溯记录</b>{traceEvents.map((event) => <p key={event.id}><time>{event.created_at}</time><span>{event.event_type}</span>{event.task_id ? ` · 任务 #${event.task_id}` : ''}{event.asset_id ? ` · 资产 #${event.asset_id}` : ''}</p>)}</div>}
         {storyboard?.final_video_url && <div className="final-video"><div><span className="eyebrow">PUBLISH READY</span><h3>最终成片</h3><a href={storyboard.final_video_url} target="_blank" rel="noreferrer">打开/下载视频</a></div><video controls src={storyboard.final_video_url} /></div>}

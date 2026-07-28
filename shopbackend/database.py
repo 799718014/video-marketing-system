@@ -105,6 +105,9 @@ class ShopDatabase:
                     reference_manifest_json TEXT NOT NULL DEFAULT '[]',
                     quality_status TEXT NOT NULL DEFAULT 'not_checked',
                     quality_decision TEXT,
+                    source_type TEXT NOT NULL DEFAULT 'generated',
+                    source_task_type TEXT,
+                    source_provider_task_id TEXT,
                     error TEXT,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -162,6 +165,9 @@ class ShopDatabase:
             self._ensure_column(conn, "generation_tasks", "reference_manifest_json", "TEXT NOT NULL DEFAULT '[]'")
             self._ensure_column(conn, "generation_tasks", "quality_status", "TEXT NOT NULL DEFAULT 'not_checked'")
             self._ensure_column(conn, "generation_tasks", "quality_decision", "TEXT")
+            self._ensure_column(conn, "generation_tasks", "source_type", "TEXT NOT NULL DEFAULT 'generated'")
+            self._ensure_column(conn, "generation_tasks", "source_task_type", "TEXT")
+            self._ensure_column(conn, "generation_tasks", "source_provider_task_id", "TEXT")
 
     @staticmethod
     def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
@@ -408,6 +414,47 @@ class ShopDatabase:
                     )
                     queued.append(self.get_generation_task(cursor.lastrowid, conn))
             return queued
+
+    def import_kling_library_video(self, scene_id: int, library_item: dict[str, Any]) -> Optional[dict[str, Any]]:
+        """将当前可灵账号的已完成历史视频登记为本分镜候选，不复制或信任前端传入 URL。"""
+        with self._connection() as conn:
+            scene = conn.execute(
+                """SELECT s.*, b.product_id FROM storyboard_scenes s
+                   JOIN storyboards b ON b.id = s.storyboard_id WHERE s.id = ?""", (scene_id,)
+            ).fetchone()
+            if not scene:
+                return None
+            existing = conn.execute(
+                """SELECT id FROM generation_tasks
+                   WHERE scene_id = ? AND source_type = 'kling_library'
+                     AND source_provider_task_id = ? AND source_task_type = ?""",
+                (scene_id, library_item["task_id"], library_item["task_type"]),
+            ).fetchone()
+            if existing:
+                return self.get_generation_task(existing["id"], conn)
+            main_asset = conn.execute("SELECT url FROM product_assets WHERE id = ?", (scene["asset_id"],)).fetchone()
+            references = self._list_scene_references(conn, scene_id)
+            next_index = conn.execute(
+                "SELECT COALESCE(MAX(candidate_index), 0) + 1 FROM generation_tasks WHERE scene_id = ?", (scene_id,)
+            ).fetchone()[0]
+            cursor = conn.execute(
+                """INSERT INTO generation_tasks
+                (storyboard_id, scene_id, provider_task_id, model, image_url, prompt, status, video_url, cover_url,
+                 candidate_group_id, candidate_index, reference_manifest_json, source_type, source_task_type, source_provider_task_id)
+                VALUES (?, ?, ?, 'kling-library', ?, ?, ?, ?, ?, ?, ?, ?, 'kling_library', ?, ?)""",
+                (
+                    scene["storyboard_id"], scene_id, library_item["task_id"], main_asset["url"] if main_asset else "",
+                    "从可灵视频库导入的候选片段", library_item["status"], library_item["video_url"], library_item.get("cover_url"),
+                    f"library-{library_item['task_id']}", next_index, self._json(references),
+                    library_item["task_type"], library_item["task_id"],
+                ),
+            )
+            self._add_trace_event(
+                conn, "kling_library.imported",
+                {"source_task_id": library_item["task_id"], "source_task_type": library_item["task_type"], "video_url": library_item["video_url"]},
+                product_id=scene["product_id"], storyboard_id=scene["storyboard_id"], scene_id=scene_id, task_id=cursor.lastrowid,
+            )
+            return self.get_generation_task(cursor.lastrowid, conn)
 
     @staticmethod
     def _build_motion_prompt(scene: sqlite3.Row, references: list[dict[str, Any]]) -> str:

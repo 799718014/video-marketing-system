@@ -6,7 +6,7 @@ import uuid
 from pathlib import Path
 from urllib.parse import urlparse
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -17,7 +17,7 @@ from keling import keling
 from quality_service import quality_reviewer
 from schemas import (
     AssetType, CandidateSelectionRequest, CandidateTaskRequest, ManualQualityReviewRequest,
-    ProductAssetCreate, ProductCreate, StoryboardCreate, StoryboardSceneUpdate,
+    KlingLibraryVideoImportRequest, ProductAssetCreate, ProductCreate, StoryboardCreate, StoryboardSceneUpdate,
 )
 
 
@@ -169,6 +169,19 @@ def get_storyboard(storyboard_id: int) -> dict:
     return require_storyboard(storyboard_id)
 
 
+@app.get("/api/kling-video-library")
+async def get_kling_video_library(
+    task_type: str = Query("text2video", pattern="^(text2video|image2video)$"),
+    page_num: int = Query(1, ge=1, le=1000),
+    page_size: int = Query(12, ge=1, le=100),
+) -> dict:
+    """读取当前可灵账号历史任务，用于候选片段复用；视频 URL 可能过期。"""
+    try:
+        return await keling.list_video_library(task_type, page_num, page_size)
+    except Exception as error:
+        raise HTTPException(status_code=503, detail=f"可灵视频库查询失败: {error}")
+
+
 @app.put("/api/storyboard-scenes/{scene_id}")
 def update_scene(scene_id: int, payload: StoryboardSceneUpdate) -> dict:
     scene = db.get_scene(scene_id)
@@ -183,6 +196,24 @@ def update_scene(scene_id: int, payload: StoryboardSceneUpdate) -> dict:
         verify_reference_assets(values["reference_assets"], scene["product_id"])
     updated = db.update_scene(scene_id, values)
     return updated
+
+
+@app.post("/api/storyboard-scenes/{scene_id}/import-kling-video", status_code=201)
+async def import_kling_library_video(scene_id: int, payload: KlingLibraryVideoImportRequest) -> dict:
+    """校验当前账号可灵任务后，将已完成视频引入本分镜候选池。"""
+    scene = db.get_scene(scene_id)
+    if not scene:
+        raise HTTPException(status_code=404, detail="分镜不存在")
+    try:
+        library_item = await keling.get_library_video(payload.task_id, payload.task_type)
+    except Exception as error:
+        raise HTTPException(status_code=503, detail=f"可灵视频库任务查询失败: {error}")
+    if library_item["status"] not in {"succeed", "succeeded"} or not library_item.get("video_url"):
+        raise HTTPException(status_code=409, detail="该可灵视频尚未生成完成或下载链接不可用")
+    task = db.import_kling_library_video(scene_id, library_item)
+    if not task:
+        raise HTTPException(status_code=404, detail="分镜不存在")
+    return task
 
 
 @app.post("/api/storyboards/{storyboard_id}/generation-tasks", status_code=201)
@@ -300,7 +331,11 @@ async def refresh_generation_task(task_id: int) -> dict:
     if not task["provider_task_id"]:
         raise HTTPException(status_code=409, detail="任务尚未提交到可灵")
     try:
-        result = await keling.get_image_to_video_status(task["provider_task_id"])
+        if task.get("source_type") == "kling_library":
+            item = await keling.get_library_video(task["source_provider_task_id"], task["source_task_type"])
+            result = {"status": item["status"], "video_url": item.get("video_url"), "cover_url": item.get("cover_url"), "error": item.get("error")}
+        else:
+            result = await keling.get_image_to_video_status(task["provider_task_id"])
     except Exception as error:
         raise HTTPException(status_code=503, detail=f"图生视频状态查询失败: {error}")
     return db.update_generation_task(task_id, **result)

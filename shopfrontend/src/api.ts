@@ -91,6 +91,24 @@ export interface TraceEvent {
   payload: Record<string, unknown>
 }
 
+export interface KlingLibraryItem {
+  task_id: string
+  task_type: 'text2video' | 'image2video'
+  status: string
+  video_url?: string | null
+  cover_url?: string | null
+  duration?: string | number | null
+  created_at?: number | null
+  error?: string | null
+}
+
+export interface KlingLibraryResponse {
+  items: KlingLibraryItem[]
+  page_num: number
+  page_size: number
+  task_type: 'text2video' | 'image2video'
+}
+
 const defaultBaseUrl = import.meta.env.VITE_SHOP_API_BASE ?? 'http://localhost:8010'
 
 export function getApiBase() {
@@ -131,6 +149,8 @@ export const api = {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title, scenes }),
   }),
   getStoryboard: (id: number) => request<Storyboard>(`/api/storyboards/${id}`),
+  getKlingVideoLibrary: (taskType: 'text2video' | 'image2video', pageNum = 1, pageSize = 6) =>
+    request<KlingLibraryResponse>(`/api/kling-video-library?task_type=${taskType}&page_num=${pageNum}&page_size=${pageSize}`),
   queueTasks: (id: number) => request<GenerationTask[]>(`/api/storyboards/${id}/generation-tasks`, { method: 'POST' }),
   queueCandidates: (id: number, candidateCount: number, forceNew = false) => request<GenerationTask[]>(`/api/storyboards/${id}/candidate-tasks`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ candidate_count: candidateCount, force_new: forceNew }),
@@ -143,6 +163,9 @@ export const api = {
   }),
   qualityReview: (id: number) => request<{ task: GenerationTask; review: { summary: string; decision: string } }>(`/api/generation-tasks/${id}/quality-review`, { method: 'POST' }),
   getTrace: (id: number) => request<TraceEvent[]>(`/api/storyboards/${id}/trace`),
+  importKlingVideo: (sceneId: number, taskId: string, taskType: 'text2video' | 'image2video') => request<GenerationTask>(`/api/storyboard-scenes/${sceneId}/import-kling-video`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ task_id: taskId, task_type: taskType }),
+  }),
   composeTask: (id: number) => request<GenerationTask>(`/api/generation-tasks/${id}/compose`, { method: 'POST' }),
   composeFinal: (id: number) => request<Storyboard>(`/api/storyboards/${id}/compose-final`, { method: 'POST' }),
 }
