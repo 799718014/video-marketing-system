@@ -108,6 +108,10 @@ class ShopDatabase:
                     source_type TEXT NOT NULL DEFAULT 'generated',
                     source_task_type TEXT,
                     source_provider_task_id TEXT,
+                    submission_key TEXT,
+                    dispatch_claimed_at TEXT,
+                    dispatch_attempts INTEGER NOT NULL DEFAULT 0,
+                    next_dispatch_at TEXT,
                     error TEXT,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -168,6 +172,14 @@ class ShopDatabase:
             self._ensure_column(conn, "generation_tasks", "source_type", "TEXT NOT NULL DEFAULT 'generated'")
             self._ensure_column(conn, "generation_tasks", "source_task_type", "TEXT")
             self._ensure_column(conn, "generation_tasks", "source_provider_task_id", "TEXT")
+            self._ensure_column(conn, "generation_tasks", "submission_key", "TEXT")
+            self._ensure_column(conn, "generation_tasks", "dispatch_claimed_at", "TEXT")
+            self._ensure_column(conn, "generation_tasks", "dispatch_attempts", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(conn, "generation_tasks", "next_dispatch_at", "TEXT")
+            # 索引在迁移字段补齐后创建，确保旧版数据库升级不会因缺列失败。
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tasks_dispatch ON generation_tasks(status, next_dispatch_at, storyboard_id)"
+            )
 
     @staticmethod
     def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
@@ -252,6 +264,28 @@ class ShopDatabase:
                 product_id=product_id, asset_id=cursor.lastrowid,
             )
             return self._decode(row, "metadata")
+
+    def save_asset_preflight(self, asset_id: int, result: dict[str, Any] | None, error: str | None = None) -> Optional[dict[str, Any]]:
+        """将最新素材预检快照写回 metadata，并留下可追溯事件。"""
+        with self._connection() as conn:
+            row = conn.execute("SELECT * FROM product_assets WHERE id = ?", (asset_id,)).fetchone()
+            if not row:
+                return None
+            asset = self._decode(row, "metadata")
+            metadata = asset["metadata"]
+            metadata["preflight"] = {
+                "status": "passed" if result else "failed",
+                "result": result,
+                "error": error,
+            }
+            conn.execute(
+                "UPDATE product_assets SET metadata_json = ? WHERE id = ?", (self._json(metadata), asset_id)
+            )
+            self._add_trace_event(
+                conn, "asset.preflight_passed" if result else "asset.preflight_failed",
+                {"error": error, "result": result}, product_id=asset["product_id"], asset_id=asset_id,
+            )
+        return self.get_asset(asset_id)
 
     def create_storyboard(self, product_id: int, title: str, scenes: list[dict[str, Any]]) -> dict[str, Any]:
         with self._connection() as conn:
@@ -382,7 +416,7 @@ class ShopDatabase:
             queued = []
             for scene in scenes:
                 active_task = conn.execute(
-                    "SELECT id FROM generation_tasks WHERE scene_id = ? AND status IN ('queued', 'submitted', 'processing')",
+                    "SELECT id FROM generation_tasks WHERE scene_id = ? AND status IN ('queued', 'submitting', 'submitted', 'processing')",
                     (scene["id"],),
                 ).fetchone()
                 existing_task = conn.execute(
@@ -467,17 +501,128 @@ class ShopDatabase:
         """按 API Key 全局统计活跃任务，不能只限制单个分镜批次。"""
         with self._connection() as conn:
             return conn.execute(
-                "SELECT COUNT(*) FROM generation_tasks WHERE status IN ('submitted', 'processing')"
+                "SELECT COUNT(*) FROM generation_tasks WHERE status IN ('submitting', 'submitted', 'processing')"
             ).fetchone()[0]
 
-    def get_next_queued_task(self, storyboard_id: int) -> Optional[dict[str, Any]]:
+    def recover_stale_submission_claims(self, lease_seconds: int) -> int:
+        """回收进程崩溃遗留的提交租约；保留 submission_key 以保证重试仍然幂等。"""
         with self._connection() as conn:
+            rows = conn.execute(
+                """SELECT id, storyboard_id, scene_id FROM generation_tasks
+                   WHERE status = 'submitting'
+                     AND dispatch_claimed_at <= datetime('now', ?)""",
+                (f"-{lease_seconds} seconds",),
+            ).fetchall()
+            if not rows:
+                return 0
+            conn.execute(
+                """UPDATE generation_tasks
+                   SET status = 'queued', dispatch_claimed_at = NULL,
+                       next_dispatch_at = CURRENT_TIMESTAMP,
+                       error = '提交租约超时，已由 Worker 回收', updated_at = CURRENT_TIMESTAMP
+                   WHERE status = 'submitting' AND dispatch_claimed_at <= datetime('now', ?)""",
+                (f"-{lease_seconds} seconds",),
+            )
+            for row in rows:
+                self._add_trace_event(
+                    conn, "generation.dispatch_recovered", {"lease_seconds": lease_seconds},
+                    storyboard_id=row["storyboard_id"], scene_id=row["scene_id"], task_id=row["id"],
+                )
+            return len(rows)
+
+    def claim_next_queued_task(
+        self, max_provider_parallel: int, storyboard_id: int | None = None,
+    ) -> Optional[dict[str, Any]]:
+        """在一个 SQLite 写事务内检查并发配额并将一条 queued 任务原子改为 submitting。"""
+        with self._connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            active_count = conn.execute(
+                "SELECT COUNT(*) FROM generation_tasks WHERE status IN ('submitting', 'submitted', 'processing')"
+            ).fetchone()[0]
+            if active_count >= max_provider_parallel:
+                return None
+            scope_sql, params = "", []
+            if storyboard_id is not None:
+                scope_sql, params = " AND storyboard_id = ?", [storyboard_id]
             row = conn.execute(
-                """SELECT * FROM generation_tasks WHERE storyboard_id = ? AND status = 'queued'
-                   ORDER BY scene_id, candidate_group_id, candidate_index, id LIMIT 1""",
-                (storyboard_id,),
+                """SELECT * FROM generation_tasks
+                   WHERE status = 'queued' AND (next_dispatch_at IS NULL OR next_dispatch_at <= CURRENT_TIMESTAMP)"""
+                + scope_sql + " ORDER BY storyboard_id, scene_id, candidate_group_id, candidate_index, id LIMIT 1",
+                params,
             ).fetchone()
-            return self._task_result(row) if row else None
+            if not row:
+                return None
+            submission_key = row["submission_key"] or uuid.uuid4().hex
+            updated = conn.execute(
+                """UPDATE generation_tasks
+                   SET status = 'submitting', submission_key = ?, dispatch_claimed_at = CURRENT_TIMESTAMP,
+                       dispatch_attempts = dispatch_attempts + 1, next_dispatch_at = NULL,
+                       error = NULL, updated_at = CURRENT_TIMESTAMP
+                   WHERE id = ? AND status = 'queued'""",
+                (submission_key, row["id"]),
+            )
+            if updated.rowcount != 1:
+                return None
+            task = conn.execute("SELECT * FROM generation_tasks WHERE id = ?", (row["id"],)).fetchone()
+            self._add_trace_event(
+                conn, "generation.dispatch_claimed",
+                {"attempt": task["dispatch_attempts"]},
+                storyboard_id=task["storyboard_id"], scene_id=task["scene_id"], task_id=task["id"],
+            )
+            return self._task_result(task)
+
+    def complete_submission_claim(self, task_id: int, submission_key: str, result: dict[str, Any]) -> Optional[dict[str, Any]]:
+        """只有仍持有同一租约的 Worker 才能写入供应商任务号。"""
+        with self._connection() as conn:
+            task = conn.execute("SELECT storyboard_id, scene_id FROM generation_tasks WHERE id = ?", (task_id,)).fetchone()
+            updated = conn.execute(
+                """UPDATE generation_tasks
+                   SET provider_task_id = ?, status = ?, dispatch_claimed_at = NULL, error = NULL,
+                       updated_at = CURRENT_TIMESTAMP
+                   WHERE id = ? AND status = 'submitting' AND submission_key = ?""",
+                (result["provider_task_id"], result["status"], task_id, submission_key),
+            )
+            if updated.rowcount != 1:
+                return None
+            if task:
+                self._add_trace_event(
+                    conn, "generation.submitted", {"provider_task_id": result["provider_task_id"]},
+                    storyboard_id=task["storyboard_id"], scene_id=task["scene_id"], task_id=task_id,
+                )
+        return self.get_generation_task(task_id)
+
+    def release_submission_claim(self, task_id: int, submission_key: str, error: str) -> Optional[dict[str, Any]]:
+        """失败后按有限退避回队；submission_key 不变，下一次请求仍使用同一个幂等键。"""
+        with self._connection() as conn:
+            task = conn.execute(
+                "SELECT storyboard_id, scene_id, dispatch_attempts FROM generation_tasks WHERE id = ?", (task_id,)
+            ).fetchone()
+            if not task:
+                return None
+            delay_seconds = min(300, 2 ** min(task["dispatch_attempts"], 8))
+            updated = conn.execute(
+                """UPDATE generation_tasks
+                   SET status = 'queued', dispatch_claimed_at = NULL,
+                       next_dispatch_at = datetime('now', ?), error = ?, updated_at = CURRENT_TIMESTAMP
+                   WHERE id = ? AND status = 'submitting' AND submission_key = ?""",
+                (f"+{delay_seconds} seconds", error[:2000], task_id, submission_key),
+            )
+            if updated.rowcount != 1:
+                return None
+            self._add_trace_event(
+                conn, "generation.dispatch_retry_scheduled", {"delay_seconds": delay_seconds, "error": error[:500]},
+                storyboard_id=task["storyboard_id"], scene_id=task["scene_id"], task_id=task_id,
+            )
+        return self.get_generation_task(task_id)
+
+    def list_tasks_to_refresh(self) -> list[dict[str, Any]]:
+        with self._connection() as conn:
+            rows = conn.execute(
+                """SELECT * FROM generation_tasks
+                   WHERE provider_task_id IS NOT NULL AND status IN ('submitted', 'processing')
+                   ORDER BY updated_at ASC, id ASC"""
+            ).fetchall()
+            return [self._task_result(row) for row in rows]
 
     @staticmethod
     def _task_result(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
@@ -641,7 +786,7 @@ class ShopDatabase:
     def list_storyboard_composed_tasks(self, storyboard_id: int) -> list[dict[str, Any]]:
         with self._connection() as conn:
             rows = conn.execute(
-                """SELECT s.scene_no, s.id AS scene_id, t.id, t.composed_video_url,
+                """SELECT s.scene_no, s.target_duration, s.id AS scene_id, t.id, t.composed_video_url,
                           t.composition_status, t.composition_error
                    FROM storyboard_scenes s
                    LEFT JOIN generation_tasks t ON t.id = (

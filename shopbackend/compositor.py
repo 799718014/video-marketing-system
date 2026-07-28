@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 import tempfile
@@ -11,7 +12,9 @@ from urllib.parse import urlparse
 
 import httpx
 
-from config import DATA_DIR, FFMPEG_BINARY, FFMPEG_FONT_FILE, OUTPUT_DIR, PUBLIC_BASE_URL, UPLOAD_DIR
+from config import (
+    DATA_DIR, FFMPEG_BINARY, FFMPEG_FONT_FILE, FFPROBE_BINARY, OUTPUT_DIR, PUBLIC_BASE_URL, UPLOAD_DIR,
+)
 
 
 class CompositionError(RuntimeError):
@@ -23,6 +26,7 @@ class DeterministicCompositor:
 
     CANVAS_WIDTH = 1080
     CANVAS_HEIGHT = 1920
+    CANVAS_FPS = 30
 
     def compose_scene(self, context: dict[str, Any]) -> str:
         if not context.get("video_url"):
@@ -34,6 +38,7 @@ class DeterministicCompositor:
         with tempfile.TemporaryDirectory(prefix=f"compose_task_{context['id']}_", dir=DATA_DIR) as temporary:
             workdir = Path(temporary)
             video_file = self._materialize(context["video_url"], workdir, "source.mp4")
+            self._validate_source_video(video_file, context["target_duration"])
             transparent_asset = self._select_asset(context, config.get("transparent_asset_id"), "transparent")
             logo_asset = self._select_asset(context, config.get("logo_asset_id"), "logo")
 
@@ -84,10 +89,11 @@ class DeterministicCompositor:
             command.extend([
                 "-filter_complex", ";".join(filter_steps),
                 "-map", f"[{current}]", "-map", "0:a?",
-                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
-                "-shortest", "-movflags", "+faststart", str(output_file),
+                "-c:v", "libx264", "-r", str(self.CANVAS_FPS), "-pix_fmt", "yuv420p", "-c:a", "aac",
+                "-t", str(context["target_duration"]), "-shortest", "-movflags", "+faststart", str(output_file),
             ])
             self._run_ffmpeg(command)
+            self._validate_output_video(output_file, context["target_duration"])
             return f"{PUBLIC_BASE_URL}/outputs/{output_file.name}"
 
     def merge_storyboard(self, storyboard_id: int, tasks: list[dict[str, Any]]) -> str:
@@ -114,6 +120,7 @@ class DeterministicCompositor:
                 FFMPEG_BINARY, "-y", "-f", "concat", "-safe", "0", "-i", str(manifest),
                 "-c", "copy", "-movflags", "+faststart", str(output_file),
             ])
+            self._validate_output_video(output_file, sum(float(task["target_duration"]) for task in tasks))
             return f"{PUBLIC_BASE_URL}/outputs/{output_file.name}"
 
     def _text_layers(self, context: dict[str, Any], layers: set[str]) -> list[tuple[str, str, dict[str, Any]]]:
@@ -182,6 +189,61 @@ class DeterministicCompositor:
         result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace")
         if result.returncode != 0:
             raise CompositionError(f"FFmpeg 合成失败: {result.stderr[-1200:]}")
+
+    @staticmethod
+    def _probe_video(file: Path) -> dict[str, Any]:
+        if not shutil.which(FFPROBE_BINARY) and not Path(FFPROBE_BINARY).is_file():
+            raise CompositionError("未找到 FFprobe；请安装 ffprobe 或配置 FFPROBE_BINARY 后再合成")
+        result = subprocess.run(
+            [
+                FFPROBE_BINARY, "-v", "error", "-show_entries",
+                "stream=codec_type,codec_name,width,height,pix_fmt,avg_frame_rate:format=duration",
+                "-of", "json", str(file),
+            ],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+        )
+        if result.returncode != 0:
+            raise CompositionError(f"无法读取视频规格: {result.stderr[-800:]}")
+        try:
+            return json.loads(result.stdout)
+        except json.JSONDecodeError as error:
+            raise CompositionError("FFprobe 未返回有效的视频规格") from error
+
+    def _validate_source_video(self, file: Path, target_duration: float) -> None:
+        probe = self._probe_video(file)
+        video = next((stream for stream in probe.get("streams", []) if stream.get("codec_type") == "video"), None)
+        if not video:
+            raise CompositionError("图生视频底片不包含可用视频流")
+        try:
+            duration = float(probe.get("format", {}).get("duration", 0))
+        except (TypeError, ValueError) as error:
+            raise CompositionError("图生视频底片缺少有效时长") from error
+        if duration + 0.1 < float(target_duration):
+            raise CompositionError(f"图生视频底片时长 {duration:.2f}s 小于分镜目标 {target_duration}s")
+
+    def _validate_output_video(self, file: Path, target_duration: float) -> None:
+        """确保每个可发布片段及最终成片统一为 1080×1920、H.264、yuv420p 和目标时长。"""
+        probe = self._probe_video(file)
+        video = next((stream for stream in probe.get("streams", []) if stream.get("codec_type") == "video"), None)
+        if not video:
+            raise CompositionError("合成结果不包含视频流")
+        if (video.get("width"), video.get("height")) != (self.CANVAS_WIDTH, self.CANVAS_HEIGHT):
+            raise CompositionError("合成结果不是 1080×1920 竖版视频")
+        if video.get("codec_name") != "h264" or video.get("pix_fmt") != "yuv420p":
+            raise CompositionError("合成结果必须为 H.264 / yuv420p，不能进入最终拼接")
+        try:
+            numerator, denominator = str(video.get("avg_frame_rate", "0/1")).split("/", maxsplit=1)
+            frame_rate = float(numerator) / float(denominator)
+        except (TypeError, ValueError, ZeroDivisionError) as error:
+            raise CompositionError("合成结果缺少有效帧率") from error
+        if abs(frame_rate - self.CANVAS_FPS) > 0.05:
+            raise CompositionError(f"合成结果帧率必须为 {self.CANVAS_FPS}fps")
+        try:
+            duration = float(probe.get("format", {}).get("duration", 0))
+        except (TypeError, ValueError) as error:
+            raise CompositionError("合成结果缺少有效时长") from error
+        if abs(duration - float(target_duration)) > 0.35:
+            raise CompositionError(f"合成结果时长 {duration:.2f}s 与目标 {target_duration:.2f}s 不一致")
 
     @staticmethod
     def _require_ffmpeg() -> None:

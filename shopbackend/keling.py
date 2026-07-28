@@ -4,21 +4,29 @@ import os
 
 import httpx
 
-from config import KELING_API_BASE, KELING_REFERENCE_IMAGES_FIELD
+from config import KELING_API_BASE, KELING_IDEMPOTENCY_HEADER, KELING_REFERENCE_IMAGES_FIELD
 
 
 class KelingClient:
     """仅负责图生视频任务的提交与状态标准化。"""
 
     @staticmethod
-    def _headers() -> dict[str, str]:
+    def _headers(idempotency_key: str | None = None) -> dict[str, str]:
         api_key = os.getenv("KELING_API_KEY", "")
         if not api_key:
             raise RuntimeError("KELING_API_KEY 未配置")
-        return {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+        if idempotency_key and KELING_IDEMPOTENCY_HEADER:
+            headers[KELING_IDEMPOTENCY_HEADER] = idempotency_key
+        return headers
+
+    @staticmethod
+    def is_configured() -> bool:
+        return bool(os.getenv("KELING_API_KEY"))
 
     async def create_image_to_video(
         self, image_url: str, prompt: str, model: str, reference_image_urls: list[str] | None = None,
+        idempotency_key: str | None = None,
     ) -> dict:
         payload = {
             "model": model,
@@ -31,7 +39,8 @@ class KelingClient:
             payload[KELING_REFERENCE_IMAGES_FIELD] = reference_image_urls
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.post(
-                f"{KELING_API_BASE}/v1/videos/image2video", headers=self._headers(), json=payload
+                f"{KELING_API_BASE}/v1/videos/image2video",
+                headers=self._headers(idempotency_key), json=payload,
             )
         if not response.is_success:
             raise RuntimeError(f"可灵图生视频创建失败 {response.status_code}: {response.text}")

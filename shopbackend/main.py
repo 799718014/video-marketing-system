@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -14,7 +15,9 @@ from compositor import CompositionError, compositor
 from config import KELING_IMAGE_TO_VIDEO_MODEL, MAX_PROVIDER_PARALLEL, OUTPUT_DIR, PUBLIC_BASE_URL, UPLOAD_DIR, ensure_directories
 from database import db
 from keling import keling
+from preflight import PreflightError, asset_preflight
 from quality_service import quality_reviewer
+from worker import generation_worker
 from schemas import (
     AssetType, CandidateSelectionRequest, CandidateTaskRequest, ManualQualityReviewRequest,
     KlingLibraryVideoImportRequest, ProductAssetCreate, ProductCreate, StoryboardCreate, StoryboardSceneUpdate,
@@ -22,7 +25,18 @@ from schemas import (
 
 
 ensure_directories()
-app = FastAPI(title="商品资产驱动图生视频服务", version="0.1.0")
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    await generation_worker.start()
+    try:
+        yield
+    finally:
+        await generation_worker.stop()
+
+
+app = FastAPI(title="商品资产驱动图生视频服务", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://localhost:5174", "http://localhost:3000"],
@@ -78,6 +92,46 @@ def verify_reference_assets(references: list[dict], product_id: int) -> None:
             raise HTTPException(status_code=422, detail=f"参考资产 #{reference['asset_id']} 不属于当前商品")
 
 
+async def preflight_registered_asset(asset_id: int, product_id: int) -> dict:
+    """重新验证已登记资产，避免外链失效或被替换后仍进入生成队列。"""
+    asset = db.get_asset(asset_id)
+    if not asset or asset["product_id"] != product_id:
+        raise HTTPException(status_code=422, detail=f"商品资产 #{asset_id} 不存在或不属于当前商品")
+    try:
+        result = await asset_preflight.inspect_url(asset["url"], asset["asset_type"])
+    except PreflightError as error:
+        db.save_asset_preflight(asset_id, None, str(error))
+        raise HTTPException(status_code=422, detail=f"商品资产 #{asset_id} 预检失败: {error}") from error
+    return db.save_asset_preflight(asset_id, result) or asset
+
+
+async def preflight_scene_assets(scene: dict, product_id: int) -> None:
+    """在创建分镜、修改分镜和入队时验证该分镜实际会使用到的所有商品素材。"""
+    asset_ids = set()
+    if scene.get("generation_strategy") == "image_to_video" and scene.get("asset_id"):
+        asset_ids.add(scene["asset_id"])
+    asset_ids.update(reference["asset_id"] for reference in scene.get("reference_assets", []))
+
+    assets = db.list_assets(product_id)
+    config = scene.get("postprocess_config", {})
+    layers = set(scene.get("postprocess_layers", []))
+    for layer, field, asset_type in (
+        ("transparent_product", "transparent_asset_id", "transparent"),
+        ("brand_logo", "logo_asset_id", "logo"),
+    ):
+        if layer not in layers:
+            continue
+        asset_id = config.get(field)
+        if asset_id is None:
+            asset_id = next((asset["id"] for asset in assets if asset["asset_type"] == asset_type), None)
+        if asset_id is None:
+            raise HTTPException(status_code=422, detail=f"分镜模板需要 {asset_type} 素材，请先登记并通过预检")
+        asset_ids.add(asset_id)
+
+    for asset_id in asset_ids:
+        await preflight_registered_asset(asset_id, product_id)
+
+
 def require_public_asset_url(url: str) -> None:
     """可灵需要从公网拉取参考图，本地 localhost URL 不能用于图生视频。"""
     parsed = urlparse(url)
@@ -95,6 +149,8 @@ def health() -> dict:
         "max_provider_parallel": MAX_PROVIDER_PARALLEL,
         "public_base_url": PUBLIC_BASE_URL,
         "keling_configured": bool(os.environ.get("KELING_API_KEY")),
+        "generation_worker_enabled": generation_worker.enabled,
+        "generation_worker_running": generation_worker.running,
     }
 
 
@@ -115,13 +171,19 @@ def list_assets(product_id: int) -> list[dict]:
 
 
 @app.post("/api/products/{product_id}/assets", status_code=201)
-def create_asset(product_id: int, payload: ProductAssetCreate) -> dict:
+async def create_asset(product_id: int, payload: ProductAssetCreate) -> dict:
     require_product(product_id)
-    return db.create_asset(product_id, payload.model_dump())
+    values = payload.model_dump()
+    try:
+        result = await asset_preflight.inspect_url(str(values["url"]), values["asset_type"])
+    except PreflightError as error:
+        raise HTTPException(status_code=422, detail=f"商品素材预检失败: {error}") from error
+    values["metadata"]["preflight"] = {"status": "passed", "result": result, "error": None}
+    return db.create_asset(product_id, values)
 
 
 @app.post("/api/products/{product_id}/assets/upload", status_code=201)
-def upload_asset(
+async def upload_asset(
     product_id: int,
     file: UploadFile = File(...),
     asset_type: str = Form(...),
@@ -141,19 +203,33 @@ def upload_asset(
     with destination.open("wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
     try:
+        result = await asset_preflight.inspect_url(f"{PUBLIC_BASE_URL}/assets/{filename}", normalized_asset_type)
         return db.create_asset(product_id, {
             "asset_type": normalized_asset_type,
             "url": f"{PUBLIC_BASE_URL}/assets/{filename}",
             "is_primary": is_primary,
-            "metadata": {"filename": file.filename, "content_type": file.content_type},
+            "metadata": {
+                "filename": file.filename, "content_type": file.content_type,
+                "preflight": {"status": "passed", "result": result, "error": None},
+            },
         })
+    except PreflightError as error:
+        destination.unlink(missing_ok=True)
+        raise HTTPException(status_code=422, detail=f"商品素材预检失败: {error}") from error
     except Exception:
         destination.unlink(missing_ok=True)
         raise
 
 
+@app.post("/api/products/{product_id}/assets/{asset_id}/preflight")
+async def run_asset_preflight(product_id: int, asset_id: int) -> dict:
+    """对历史资产或外链刷新后的素材执行显式预检。"""
+    require_product(product_id)
+    return await preflight_registered_asset(asset_id, product_id)
+
+
 @app.post("/api/products/{product_id}/storyboards", status_code=201)
-def create_storyboard(product_id: int, payload: StoryboardCreate) -> dict:
+async def create_storyboard(product_id: int, payload: StoryboardCreate) -> dict:
     require_product(product_id)
     scenes = [scene.model_dump() for scene in payload.scenes]
     for scene in scenes:
@@ -161,6 +237,7 @@ def create_storyboard(product_id: int, payload: StoryboardCreate) -> dict:
             verify_asset_belongs_to_product(scene.get("asset_id"), product_id)
         verify_reference_assets(scene.get("reference_assets", []), product_id)
         verify_postprocess_assets(scene.get("postprocess_config", {}), product_id)
+        await preflight_scene_assets(scene, product_id)
     return db.create_storyboard(product_id, payload.title, scenes)
 
 
@@ -183,7 +260,7 @@ async def get_kling_video_library(
 
 
 @app.put("/api/storyboard-scenes/{scene_id}")
-def update_scene(scene_id: int, payload: StoryboardSceneUpdate) -> dict:
+async def update_scene(scene_id: int, payload: StoryboardSceneUpdate) -> dict:
     scene = db.get_scene(scene_id)
     if not scene:
         raise HTTPException(status_code=404, detail="分镜不存在")
@@ -194,6 +271,8 @@ def update_scene(scene_id: int, payload: StoryboardSceneUpdate) -> dict:
         verify_postprocess_assets(values["postprocess_config"], scene["product_id"])
     if values.get("reference_assets") is not None:
         verify_reference_assets(values["reference_assets"], scene["product_id"])
+    prospective_scene = {**scene, **values}
+    await preflight_scene_assets(prospective_scene, scene["product_id"])
     updated = db.update_scene(scene_id, values)
     return updated
 
@@ -204,6 +283,7 @@ async def import_kling_library_video(scene_id: int, payload: KlingLibraryVideoIm
     scene = db.get_scene(scene_id)
     if not scene:
         raise HTTPException(status_code=404, detail="分镜不存在")
+    await preflight_scene_assets(scene, scene["product_id"])
     try:
         library_item = await keling.get_library_video(payload.task_id, payload.task_type)
     except Exception as error:
@@ -217,18 +297,21 @@ async def import_kling_library_video(scene_id: int, payload: KlingLibraryVideoIm
 
 
 @app.post("/api/storyboards/{storyboard_id}/generation-tasks", status_code=201)
-def queue_generation_tasks(storyboard_id: int) -> list[dict]:
+async def queue_generation_tasks(storyboard_id: int) -> list[dict]:
     storyboard = require_storyboard(storyboard_id)
     for scene in storyboard["scenes"]:
         if scene["generation_strategy"] == "image_to_video":
             if not scene["asset_id"] or not scene["asset_url"]:
                 raise HTTPException(status_code=422, detail=f"分镜 {scene['scene_no']} 未关联商品图")
             require_public_asset_url(scene["asset_url"])
-    return db.queue_storyboard_tasks(storyboard_id, KELING_IMAGE_TO_VIDEO_MODEL)
+            await preflight_scene_assets(scene, storyboard["product_id"])
+    tasks = db.queue_storyboard_tasks(storyboard_id, KELING_IMAGE_TO_VIDEO_MODEL)
+    generation_worker.wake()
+    return tasks
 
 
 @app.post("/api/storyboards/{storyboard_id}/candidate-tasks", status_code=201)
-def queue_candidate_tasks(storyboard_id: int, payload: CandidateTaskRequest) -> list[dict]:
+async def queue_candidate_tasks(storyboard_id: int, payload: CandidateTaskRequest) -> list[dict]:
     """为每个分镜创建可人工对比的候选片段组，最多四个候选，避免无限并发。"""
     storyboard = require_storyboard(storyboard_id)
     for scene in storyboard["scenes"]:
@@ -239,30 +322,23 @@ def queue_candidate_tasks(storyboard_id: int, payload: CandidateTaskRequest) -> 
         require_public_asset_url(scene["asset_url"])
         for reference in scene["reference_assets"]:
             require_public_asset_url(reference["url"])
-    return db.queue_storyboard_tasks(
+        await preflight_scene_assets(scene, storyboard["product_id"])
+    tasks = db.queue_storyboard_tasks(
         storyboard_id, KELING_IMAGE_TO_VIDEO_MODEL, payload.candidate_count, payload.force_new,
     )
+    generation_worker.wake()
+    return tasks
 
 
 @app.post("/api/storyboards/{storyboard_id}/dispatch-next")
 async def dispatch_next_task(storyboard_id: int) -> dict:
+    """兼容旧入口：不直接提交，改为唤醒后台 Worker 原子认领队列任务。"""
     require_storyboard(storyboard_id)
-    if db.active_provider_task_count() >= MAX_PROVIDER_PARALLEL:
-        return {"status": "waiting_for_provider_slot", "message": "正在等待可灵并行资源位"}
-    task = db.get_next_queued_task(storyboard_id)
-    if not task:
-        return {"status": "queue_empty", "message": "没有待提交的图生视频任务"}
-    require_public_asset_url(task["image_url"])
-    try:
-        reference_urls = [reference["url"] for reference in task.get("reference_manifest", [])]
-        result = await keling.create_image_to_video(task["image_url"], task["prompt"], task["model"], reference_urls)
-    except Exception as error:
-        # 资源不足或临时网络错误保留 queued 状态，稍后可再次调度。
-        db.update_generation_task(task["id"], error=str(error))
-        raise HTTPException(status_code=503, detail=f"图生视频暂未提交成功: {error}")
-    return db.update_generation_task(
-        task["id"], provider_task_id=result["provider_task_id"], status=result["status"], error=None
-    )
+    generation_worker.wake()
+    return {
+        "status": "queued_for_dispatch",
+        "message": "后台 Worker 将按全局并发配额原子认领并提交任务",
+    }
 
 
 @app.get("/api/generation-tasks/{task_id}")
@@ -342,11 +418,15 @@ async def refresh_generation_task(task_id: int) -> dict:
 
 
 @app.post("/api/generation-tasks/{task_id}/compose")
-def compose_generation_task(task_id: int) -> dict:
+async def compose_generation_task(task_id: int) -> dict:
     """将图生视频底片与透明商品图、Logo、字幕/价格/CTA 模板合成为确定性片段。"""
     context = db.get_composition_context(task_id)
     if not context:
         raise HTTPException(status_code=404, detail="生成任务不存在")
+    scene = db.get_scene(context["scene_id"])
+    if not scene:
+        raise HTTPException(status_code=404, detail="分镜不存在")
+    await preflight_scene_assets(scene, scene["product_id"])
     db.update_generation_task(task_id, composition_status="processing", composition_error=None)
     try:
         composed_video_url = compositor.compose_scene(context)
