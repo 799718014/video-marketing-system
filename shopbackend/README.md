@@ -2,6 +2,8 @@
 
 该服务实现“真实商品资产锁定身份 + 图生视频生成运动 + 后期图层配置”的后端基础能力。
 
+Windows 10 新机部署请见 [DEPLOYMENT_WINDOWS10.md](DEPLOYMENT_WINDOWS10.md)。
+
 ## 能力
 
 - 商品事实库：名称、品牌、价格、卖点、禁用词；
