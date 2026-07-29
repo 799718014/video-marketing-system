@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import shutil
 import uuid
@@ -12,10 +13,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from compositor import CompositionError, compositor
-from config import KELING_IMAGE_TO_VIDEO_MODEL, MAX_PROVIDER_PARALLEL, OUTPUT_DIR, PUBLIC_BASE_URL, UPLOAD_DIR, ensure_directories
+from config import (
+    KELING_ASSET_BASE_URL, KELING_IMAGE_TO_VIDEO_MODEL, MAX_PROVIDER_PARALLEL,
+    OUTPUT_DIR, PUBLIC_BASE_URL, UPLOAD_DIR, ensure_directories,
+)
 from database import db
 from keling import keling
 from preflight import PreflightError, asset_preflight
+from qiniu_storage import QiniuStorageError, qiniu_storage
 from quality_service import quality_reviewer
 from worker import generation_worker
 from schemas import (
@@ -133,12 +138,18 @@ async def preflight_scene_assets(scene: dict, product_id: int) -> None:
 
 
 def require_public_asset_url(url: str) -> None:
-    """可灵需要从公网拉取参考图，本地 localhost URL 不能用于图生视频。"""
+    """只允许可灵从配置的七牛云 CDN 域名拉取商品素材。"""
     parsed = urlparse(url)
-    if parsed.scheme != "https" or parsed.hostname in {"localhost", "127.0.0.1", "::1"}:
+    asset_base = urlparse(KELING_ASSET_BASE_URL)
+    base_path = asset_base.path.rstrip("/")
+    matches_asset_base = (
+        parsed.scheme == "https" and asset_base.scheme == "https" and parsed.netloc == asset_base.netloc
+        and (not base_path or parsed.path == base_path or parsed.path.startswith(f"{base_path}/"))
+    )
+    if not matches_asset_base:
         raise HTTPException(
             status_code=422,
-            detail="商品图必须是可被可灵访问的公网 HTTPS URL；请配置对象存储/CDN 的 PUBLIC_BASE_URL 后再提交生成",
+            detail="商品图必须位于 KELING_ASSET_BASE_URL 配置的七牛云 HTTPS 域名下；请通过 /assets/upload 上传后再提交生成",
         )
 
 
@@ -148,7 +159,9 @@ def health() -> dict:
         "status": "ok",
         "max_provider_parallel": MAX_PROVIDER_PARALLEL,
         "public_base_url": PUBLIC_BASE_URL,
+        "keling_asset_base_url": KELING_ASSET_BASE_URL,
         "keling_configured": bool(os.environ.get("KELING_API_KEY")),
+        "qiniu_configured": qiniu_storage.configured,
         "generation_worker_enabled": generation_worker.enabled,
         "generation_worker_running": generation_worker.running,
     }
@@ -189,8 +202,12 @@ async def upload_asset(
     asset_type: str = Form(...),
     is_primary: bool = Form(False),
 ) -> dict:
-    """本地上传用于资产管理；生产环境需将 PUBLIC_BASE_URL 指向可访问的对象存储/CDN。"""
+    """先在本地预检，再上传至七牛云 Kodo，并以 CDN URL 登记商品资产。"""
     require_product(product_id)
+    try:
+        qiniu_storage.require_config()
+    except QiniuStorageError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=422, detail="仅支持图片资产")
     try:
@@ -203,19 +220,27 @@ async def upload_asset(
     with destination.open("wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
     try:
-        result = await asset_preflight.inspect_url(f"{PUBLIC_BASE_URL}/assets/{filename}", normalized_asset_type)
+        # 本地先做格式、尺寸和透明通道检查，避免无效素材占用云端空间。
+        await asset_preflight.inspect_url(f"{PUBLIC_BASE_URL}/assets/{filename}", normalized_asset_type)
+        object_key = qiniu_storage.build_object_key(product_id, filename)
+        uploaded = await asyncio.to_thread(qiniu_storage.upload_image, destination, object_key)
+        result = await asset_preflight.inspect_url(uploaded["url"], normalized_asset_type)
         return db.create_asset(product_id, {
             "asset_type": normalized_asset_type,
-            "url": f"{PUBLIC_BASE_URL}/assets/{filename}",
+            "url": uploaded["url"],
             "is_primary": is_primary,
             "metadata": {
                 "filename": file.filename, "content_type": file.content_type,
+                "qiniu_key": uploaded["key"], "qiniu_hash": uploaded.get("hash"),
                 "preflight": {"status": "passed", "result": result, "error": None},
             },
         })
     except PreflightError as error:
         destination.unlink(missing_ok=True)
         raise HTTPException(status_code=422, detail=f"商品素材预检失败: {error}") from error
+    except QiniuStorageError as error:
+        destination.unlink(missing_ok=True)
+        raise HTTPException(status_code=503, detail=str(error)) from error
     except Exception:
         destination.unlink(missing_ok=True)
         raise

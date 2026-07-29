@@ -10,6 +10,12 @@ DATABASE_PATH = Path(os.getenv("SHOP_DATABASE_PATH", DATA_DIR / "shop.db"))
 
 # 图生视频必须由可灵服务访问商品图。生产环境应配置为对象存储/CDN 对外域名。
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://localhost:8010").rstrip("/")
+# 可灵生成任务使用的商品素材 CDN 域名；与本地 API/成片访问地址 PUBLIC_BASE_URL 分离。
+KELING_ASSET_BASE_URL = os.getenv("KELING_ASSET_BASE_URL", "").rstrip("/")
+QINIU_ACCESS_KEY = os.getenv("QINIU_ACCESS_KEY", "")
+QINIU_SECRET_KEY = os.getenv("QINIU_SECRET_KEY", "")
+QINIU_BUCKET = os.getenv("QINIU_BUCKET", "")
+QINIU_KEY_PREFIX = os.getenv("QINIU_KEY_PREFIX", "products").strip("/")
 KELING_API_BASE = os.getenv("KELING_API_BASE", "https://api-beijing.klingai.com").rstrip("/")
 KELING_IMAGE_TO_VIDEO_MODEL = os.getenv("KELING_IMAGE_TO_VIDEO_MODEL", "kling-v1-5")
 # 供应商/网关支持多参考图时，配置其请求字段名（如 reference_images）；留空则安全降级为主图 + 参考清单追溯。

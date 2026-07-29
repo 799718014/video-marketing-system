@@ -4,6 +4,8 @@
 /shopfrontend/dist/
 /shopbackend/data/
 /shopbackend/__pycache__/
+/shopbackend/.venv/
+/shopbackend/run.ps1
 /backend/.env
 /backend/.env.local
 /backend/__pycache__

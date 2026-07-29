@@ -2,7 +2,7 @@
 
 本文说明如何将 `shopbackend` 部署到一台新的 Windows 10 电脑，作为内部商品图生视频服务运行。
 
-> 适用范围：本服务可在内网供业务人员使用，但可灵需要从公网 HTTPS 地址下载商品素材。因此，商品资产必须存放在可灵能够访问的对象存储/CDN，或由这台电脑通过 HTTPS 对外提供 `/assets`。
+> 适用范围：本服务可在内网供业务人员使用。`/assets/upload` 会将商品素材自动上传到七牛云 Kodo；可灵从七牛云自定义 CDN HTTPS 域名拉取素材，因此本机 API 无需对公网开放。
 
 ## 1. 部署前准备
 
@@ -57,30 +57,24 @@ pip install -r requirements.txt
 
 依赖中已包含 FastAPI、HTTP 客户端和 Pillow。Pillow 用于素材格式、尺寸、透明通道和哈希预检。
 
-## 3. 准备公网素材访问地址
+## 3. 配置七牛云素材访问
 
 ### 3.1 关键限制
 
-可灵创建图生视频时会从 `PUBLIC_BASE_URL` 下载商品主图。因此：
+可灵创建图生视频时会从 `KELING_ASSET_BASE_URL` 下载商品主图。因此：
 
-- `http://localhost:8010` 只能本机预览，不能提交给可灵；
-- `PUBLIC_BASE_URL` 必须是可灵可访问的 **公网 HTTPS** 地址；
-- 上传接口产生的 URL 为：`{PUBLIC_BASE_URL}/assets/<文件名>`；
-- 合成成片 URL 为：`{PUBLIC_BASE_URL}/outputs/<文件名>`。
+- `PUBLIC_BASE_URL` 可为 `http://localhost:8010`，只用于本地 API、预览和本地成片 URL；
+- `KELING_ASSET_BASE_URL` 必须是可灵可访问的 **七牛云 CDN HTTPS** 地址；
+- 上传接口会将文件上传至七牛云，并登记：`{KELING_ASSET_BASE_URL}/products/<商品ID>/<文件名>`；
+- 合成成片 URL 仍为：`{PUBLIC_BASE_URL}/outputs/<文件名>`。
 
 ### 3.2 推荐方案
 
-优先使用对象存储/CDN 托管商品图，并通过 `POST /api/products/{id}/assets` 登记 HTTPS URL。此方式不依赖 Windows 电脑对公网开放端口。
-
-如果必须使用本机上传接口，需要同时满足：
-
-1. 已配置可解析到这台电脑的域名；
-2. 域名已启用 HTTPS；
-3. 网关/反向代理将 `/assets`、`/outputs` 和 API 请求转发到服务；
-4. 防火墙和路由器已允许 HTTPS 入站；
-5. 公司网络策略允许可灵访问该地址。
-
-> 不建议把 `8010` 端口直接暴露到公网。应由 HTTPS 反向代理接收公网流量，再转发至本机 `127.0.0.1:8010`。
+1. 创建七牛云 Kodo Bucket，并准备公开读取的自定义 CDN HTTPS 域名，例如 `https://assets.example.com`；
+2. 在七牛云控制台获取 Access Key、Secret Key、Bucket 名称；
+3. 将 CDN 域名填写到 `KELING_ASSET_BASE_URL`，并填写 `QINIU_ACCESS_KEY`、`QINIU_SECRET_KEY`、`QINIU_BUCKET`；
+4. 通过本项目的 `/api/products/{id}/assets/upload` 上传商品图，后端会先本地预检、再上传七牛云、最后复检 CDN URL；
+5. 本地 API 可以继续监听 `127.0.0.1:8010`，无需为可灵开放端口。
 
 ## 4. 配置运行环境
 
@@ -97,8 +91,15 @@ $env:KELING_API_KEY = "替换为你的可灵 API Key"
 $env:KELING_API_BASE = "https://api-beijing.klingai.com"
 $env:KELING_IMAGE_TO_VIDEO_MODEL = "kling-v1-5"
 
-# 可灵可访问的公网 HTTPS 地址；不要填写 localhost。
-$env:PUBLIC_BASE_URL = "https://video-assets.example.com"
+# 本地 API 和本地成片访问地址；本地调试可使用 localhost。
+$env:PUBLIC_BASE_URL = "http://localhost:8010"
+
+# 七牛云 Kodo：可灵只从此 CDN HTTPS 域名下载商品素材。
+$env:KELING_ASSET_BASE_URL = "https://assets.example.com"
+$env:QINIU_ACCESS_KEY = "替换为七牛云 Access Key"
+$env:QINIU_SECRET_KEY = "替换为七牛云 Secret Key"
+$env:QINIU_BUCKET = "替换为七牛云 Bucket 名称"
+$env:QINIU_KEY_PREFIX = "products"
 
 # 视频合成和规格预检。
 $env:FFMPEG_BINARY = "ffmpeg"
@@ -219,4 +220,3 @@ pip install -r requirements.txt
 | Worker 未提交任务 | 调用 `/api/health` 确认 Worker 运行和 API Key 已配置；检查任务状态和 `error` 字段。 |
 | 成片规格校验失败 | 检查 FFmpeg/FFprobe 是否来自同一完整发行版；重新合成会统一输出 1080×1920、30fps、H.264、yuv420p。 |
 | 任务计划程序启动失败 | 用任务账号手工执行 `run.ps1`，确认其拥有项目目录、数据目录和 Python/FFmpeg 的访问权限。 |
-

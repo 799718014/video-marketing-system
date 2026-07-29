@@ -121,7 +121,6 @@ class ShopDatabase:
                 CREATE INDEX IF NOT EXISTS idx_scenes_storyboard ON storyboard_scenes(storyboard_id);
                 CREATE INDEX IF NOT EXISTS idx_tasks_storyboard ON generation_tasks(storyboard_id, status);
                 CREATE INDEX IF NOT EXISTS idx_references_scene ON scene_references(scene_id, sort_order);
-                CREATE INDEX IF NOT EXISTS idx_tasks_candidates ON generation_tasks(scene_id, candidate_group_id, selected);
 
                 CREATE TABLE IF NOT EXISTS quality_checks (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -177,6 +176,9 @@ class ShopDatabase:
             self._ensure_column(conn, "generation_tasks", "dispatch_attempts", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(conn, "generation_tasks", "next_dispatch_at", "TEXT")
             # 索引在迁移字段补齐后创建，确保旧版数据库升级不会因缺列失败。
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tasks_candidates ON generation_tasks(scene_id, candidate_group_id, selected)"
+            )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_tasks_dispatch ON generation_tasks(status, next_dispatch_at, storyboard_id)"
             )

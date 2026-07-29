@@ -29,7 +29,7 @@ $env:FFMPEG_FONT_FILE = "C:\\Windows\\Fonts\\msyh.ttc"
 uvicorn main:app --reload --port 8010
 ```
 
-`PUBLIC_BASE_URL` 必须是可灵能够访问的公网 HTTPS 域名。`localhost` 上传的文件只能用于本地预览，不能直接提交给可灵。
+`PUBLIC_BASE_URL` 用于本地 API、静态预览和成片 URL，可在本地调试时使用 `http://localhost:8010`。商品素材通过 `/assets/upload` 上传后会自动进入七牛云 Kodo；可灵只会拉取 `KELING_ASSET_BASE_URL`（七牛云自定义 CDN HTTPS 域名）下的商品图。需配置 `QINIU_ACCESS_KEY`、`QINIU_SECRET_KEY`、`QINIU_BUCKET` 与 `KELING_ASSET_BASE_URL`。
 
 P1 合成依赖 FFmpeg。生产环境应在镜像内安装 FFmpeg，并将 `FFMPEG_FONT_FILE` 配置为包含中文字符的字体文件。成片输出至 `data/outputs`，通过 `/outputs/{filename}` 提供访问。
 
