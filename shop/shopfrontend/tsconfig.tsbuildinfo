@@ -1,1 +1,1 @@
-{"root":["./src/app.tsx","./src/api.ts","./src/main.tsx","./src/vite-env.d.ts"],"version":"5.9.3"}
+{"root":["./src/app.tsx","./src/api.ts","./src/main.tsx","./src/vite-env.d.ts","./src/components/assetpanel.tsx","./src/components/errorboundary.tsx","./src/components/productcard.tsx","./src/components/taskdashboard.tsx","./src/hooks/useoperation.ts","./src/hooks/useproduct.ts","./src/hooks/usestoryboard.ts"],"version":"5.9.3"}
