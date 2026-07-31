@@ -1,11 +1,43 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
+import time
 import uuid
 from typing import Any, Optional
 
 from config import DATABASE_PATH, ensure_directories
+
+logger = logging.getLogger(__name__)
+
+_LOCKED_RETRIES = 3
+_LOCKED_BASE_DELAY = 0.05  # 50ms -> 100ms -> 200ms
+
+
+def _retry_locked(fn):
+    """捕获 SQLite 'database is locked' 并重试整个写方法（含其事务）。"""
+    import functools
+
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        delay = _LOCKED_BASE_DELAY
+        for attempt in range(_LOCKED_RETRIES + 1):
+            try:
+                return fn(self, *args, **kwargs)
+            except sqlite3.OperationalError as exc:
+                if "locked" not in str(exc):
+                    raise
+                if attempt == _LOCKED_RETRIES:
+                    raise
+                logger.warning(
+                    "SQLite 写事务被锁，%.0fms 后第 %d 次重试：%s",
+                    delay * 1000, attempt + 1, exc,
+                )
+                time.sleep(delay)
+                delay *= 2
+        raise AssertionError("unreachable")  # pragma: no cover
+    return wrapper
 
 
 class ShopDatabase:
@@ -19,6 +51,9 @@ class ShopDatabase:
         conn = sqlite3.connect(DATABASE_PATH)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA synchronous=NORMAL")
         return conn
 
     def _init_tables(self) -> None:
@@ -212,6 +247,7 @@ class ShopDatabase:
             ),
         )
 
+    @_retry_locked
     def create_product(self, payload: dict[str, Any]) -> dict[str, Any]:
         with self._connection() as conn:
             cursor = conn.execute(
@@ -251,22 +287,24 @@ class ShopDatabase:
             row = conn.execute("SELECT * FROM product_assets WHERE id = ?", (asset_id,)).fetchone()
             return self._decode(row, "metadata") if row else None
 
+    @_retry_locked
     def create_asset(self, product_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         with self._connection() as conn:
-            if payload.get("is_primary"):
-                conn.execute("UPDATE product_assets SET is_primary = 0 WHERE product_id = ?", (product_id,))
-            cursor = conn.execute(
-                """INSERT INTO product_assets (product_id, asset_type, url, is_primary, metadata_json)
-                VALUES (?, ?, ?, ?, ?)""",
-                (product_id, payload["asset_type"], str(payload["url"]), int(payload.get("is_primary", False)), self._json(payload.get("metadata", {}))),
-            )
-            row = conn.execute("SELECT * FROM product_assets WHERE id = ?", (cursor.lastrowid,)).fetchone()
-            self._add_trace_event(
-                conn, "asset.created", {"asset_type": payload["asset_type"], "url": str(payload["url"])},
-                product_id=product_id, asset_id=cursor.lastrowid,
-            )
-            return self._decode(row, "metadata")
+                if payload.get("is_primary"):
+                    conn.execute("UPDATE product_assets SET is_primary = 0 WHERE product_id = ?", (product_id,))
+                cursor = conn.execute(
+                    """INSERT INTO product_assets (product_id, asset_type, url, is_primary, metadata_json)
+                    VALUES (?, ?, ?, ?, ?)""",
+                    (product_id, payload["asset_type"], str(payload["url"]), int(payload.get("is_primary", False)), self._json(payload.get("metadata", {}))),
+                )
+                row = conn.execute("SELECT * FROM product_assets WHERE id = ?", (cursor.lastrowid,)).fetchone()
+                self._add_trace_event(
+                    conn, "asset.created", {"asset_type": payload["asset_type"], "url": str(payload["url"])},
+                    product_id=product_id, asset_id=cursor.lastrowid,
+                )
+                return self._decode(row, "metadata")
 
+    @_retry_locked
     def save_asset_preflight(self, asset_id: int, result: dict[str, Any] | None, error: str | None = None) -> Optional[dict[str, Any]]:
         """将最新素材预检快照写回 metadata，并留下可追溯事件。"""
         with self._connection() as conn:
@@ -289,6 +327,7 @@ class ShopDatabase:
             )
         return self.get_asset(asset_id)
 
+    @_retry_locked
     def create_storyboard(self, product_id: int, title: str, scenes: list[dict[str, Any]]) -> dict[str, Any]:
         with self._connection() as conn:
             cursor = conn.execute(
@@ -376,6 +415,7 @@ class ShopDatabase:
             scene["reference_assets"] = self._list_scene_references(conn, scene_id)
             return scene
 
+    @_retry_locked
     def update_scene(self, scene_id: int, values: dict[str, Any]) -> Optional[dict[str, Any]]:
         allowed = {
             "asset_id", "scene_type", "target_duration", "generation_strategy", "motion_prompt",
@@ -404,6 +444,7 @@ class ShopDatabase:
                     )
         return self.get_scene(scene_id)
 
+    @_retry_locked
     def queue_storyboard_tasks(
         self, storyboard_id: int, model: str, candidate_count: int = 1, force_new: bool = False,
     ) -> list[dict[str, Any]]:
@@ -451,6 +492,7 @@ class ShopDatabase:
                     queued.append(self.get_generation_task(cursor.lastrowid, conn))
             return queued
 
+    @_retry_locked
     def import_kling_library_video(self, scene_id: int, library_item: dict[str, Any]) -> Optional[dict[str, Any]]:
         """将当前可灵账号的已完成历史视频登记为本分镜候选，不复制或信任前端传入 URL。"""
         with self._connection() as conn:
@@ -506,6 +548,7 @@ class ShopDatabase:
                 "SELECT COUNT(*) FROM generation_tasks WHERE status IN ('submitting', 'submitted', 'processing')"
             ).fetchone()[0]
 
+    @_retry_locked
     def recover_stale_submission_claims(self, lease_seconds: int) -> int:
         """回收进程崩溃遗留的提交租约；保留 submission_key 以保证重试仍然幂等。"""
         with self._connection() as conn:
@@ -532,6 +575,7 @@ class ShopDatabase:
                 )
             return len(rows)
 
+    @_retry_locked
     def claim_next_queued_task(
         self, max_provider_parallel: int, storyboard_id: int | None = None,
     ) -> Optional[dict[str, Any]]:
@@ -573,6 +617,7 @@ class ShopDatabase:
             )
             return self._task_result(task)
 
+    @_retry_locked
     def complete_submission_claim(self, task_id: int, submission_key: str, result: dict[str, Any]) -> Optional[dict[str, Any]]:
         """只有仍持有同一租约的 Worker 才能写入供应商任务号。"""
         with self._connection() as conn:
@@ -593,6 +638,7 @@ class ShopDatabase:
                 )
         return self.get_generation_task(task_id)
 
+    @_retry_locked
     def release_submission_claim(self, task_id: int, submission_key: str, error: str) -> Optional[dict[str, Any]]:
         """失败后按有限退避回队；submission_key 不变，下一次请求仍使用同一个幂等键。"""
         with self._connection() as conn:
@@ -646,6 +692,7 @@ class ShopDatabase:
             ).fetchall()
             return [self._task_result(row) for row in rows]
 
+    @_retry_locked
     def update_generation_task(self, task_id: int, **values: Any) -> Optional[dict[str, Any]]:
         if not values:
             return self.get_generation_task(task_id)
@@ -674,6 +721,7 @@ class ShopDatabase:
             if owns_connection:
                 conn.close()
 
+    @_retry_locked
     def select_candidate(self, task_id: int, reviewer: str | None, note: str | None) -> Optional[dict[str, Any]]:
         with self._connection() as conn:
             task = conn.execute("SELECT * FROM generation_tasks WHERE id = ?", (task_id,)).fetchone()
@@ -692,6 +740,7 @@ class ShopDatabase:
             )
         return self.get_generation_task(task_id)
 
+    @_retry_locked
     def save_quality_check(self, task_id: int, payload: dict[str, Any]) -> Optional[dict[str, Any]]:
         with self._connection() as conn:
             task = conn.execute("SELECT * FROM generation_tasks WHERE id = ?", (task_id,)).fetchone()
@@ -817,6 +866,7 @@ class ShopDatabase:
             ).fetchall()
             return [row["scene_no"] for row in rows]
 
+    @_retry_locked
     def update_storyboard_final(self, storyboard_id: int, **values: Any) -> Optional[dict[str, Any]]:
         if not values:
             return self.get_storyboard(storyboard_id)
