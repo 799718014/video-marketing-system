@@ -6,22 +6,24 @@ export interface UseStoryboardInput {
   assets: ProductAsset[]
 }
 
-export function createDraftScene(sceneNo: number, assets: ProductAsset[]): Scene {
+export function createDraftScene(sceneNo: number, assets: ProductAsset[], sceneType = 'product_closeup'): Scene {
   const main = assets.find((asset) => Boolean(asset.is_primary)) ?? assets.find((asset) => asset.asset_type === 'main')
   const transparent = assets.find((asset) => asset.asset_type === 'transparent')
   const logo = assets.find((asset) => asset.asset_type === 'logo')
+  const isLifestyle = sceneType === 'lifestyle_use' || sceneType === 'atmosphere'
   return {
     scene_no: sceneNo,
-    scene_type: 'product_closeup',
+    scene_type: sceneType,
     target_duration: 5,
     asset_id: main?.id,
-    generation_strategy: 'image_to_video',
-    motion_prompt: '镜头缓慢推进，保持商品形状、材质、颜色和比例不变，突出真实商品细节。',
+    generation_strategy: isLifestyle ? 'text_to_video' : 'image_to_video',
+    motion_prompt: isLifestyle ? '' : '镜头缓慢推进，保持商品形状、材质、颜色和比例不变，突出真实商品细节。',
+    scene_prompt: isLifestyle ? '年轻女性坐在明亮化妆台前的镜子前，使用参考图中的商品。镜头由侧脸中景缓慢推进至特写，晨间柔和自然光。保持参考商品的形状、材质、颜色、尺寸比例和佩戴位置不变；不得生成文字、价格或品牌 Logo。' : undefined,
     identity_constraints: ['保持参考图中商品的形状、材质、颜色和比例', '不得增加、删除或替换商品部件'],
     reference_assets: main ? [{ asset_id: main.id, role: 'identity', sort_order: 0 }] : [],
-    postprocess_layers: ['transparent_product', 'brand_logo', 'subtitle', 'price_tag', 'cta'],
+    postprocess_layers: isLifestyle ? ['subtitle', 'price_tag', 'cta'] : ['transparent_product', 'brand_logo', 'subtitle', 'price_tag', 'cta'],
     postprocess_config: {
-      template: 'product_promo_portrait', transparent_asset_id: transparent?.id, logo_asset_id: logo?.id, cta: '立即购买',
+      template: 'product_promo_portrait', transparent_asset_id: isLifestyle ? undefined : transparent?.id, logo_asset_id: isLifestyle ? undefined : logo?.id, cta: '立即购买',
     },
   }
 }

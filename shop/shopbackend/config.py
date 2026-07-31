@@ -18,6 +18,7 @@ QINIU_BUCKET = os.getenv("QINIU_BUCKET", "")
 QINIU_KEY_PREFIX = os.getenv("QINIU_KEY_PREFIX", "products").strip("/")
 KELING_API_BASE = os.getenv("KELING_API_BASE", "https://api-beijing.klingai.com").rstrip("/")
 KELING_IMAGE_TO_VIDEO_MODEL = os.getenv("KELING_IMAGE_TO_VIDEO_MODEL", "kling-v1-5")
+KELING_TEXT_TO_VIDEO_MODEL = os.getenv("KELING_TEXT_TO_VIDEO_MODEL", "kling-v1-5")
 # 供应商/网关支持多参考图时，配置其请求字段名（如 reference_images）；留空则安全降级为主图 + 参考清单追溯。
 KELING_REFERENCE_IMAGES_FIELD = os.getenv("KELING_REFERENCE_IMAGES_FIELD", "")
 # 可灵/网关支持幂等请求时使用的请求头；留空可关闭该头（不建议）。

@@ -53,6 +53,51 @@ class KelingClient:
             raise RuntimeError(f"可灵图生视频未返回任务 ID: {data}")
         return {"provider_task_id": task_id, "status": task.get("task_status") or task.get("status") or "submitted"}
 
+    async def create_text_to_video(
+        self, prompt: str, model: str, idempotency_key: str | None = None,
+    ) -> dict:
+        """文生视频：通过自然语言描述使用场景，AI 生成人物/场景/光线，商品身份由参考图与质检兜底。"""
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "duration": 5,
+            "aspect_ratio": "9:16",
+        }
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(
+                f"{KELING_API_BASE}/v1/videos/text2video",
+                headers=self._headers(idempotency_key), json=payload,
+            )
+        if not response.is_success:
+            raise RuntimeError(f"可灵文生视频创建失败 {response.status_code}: {response.text}")
+        data = response.json()
+        if data.get("code", 0) != 0:
+            raise RuntimeError(f"可灵文生视频业务错误: {data.get('message', data)}")
+        task = data.get("data", {})
+        task_id = task.get("task_id") or task.get("id")
+        if not task_id:
+            raise RuntimeError(f"可灵文生视频未返回任务 ID: {data}")
+        return {"provider_task_id": task_id, "status": task.get("task_status") or task.get("status") or "submitted"}
+
+    async def get_text_to_video_status(self, provider_task_id: str) -> dict:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.get(
+                f"{KELING_API_BASE}/v1/videos/text2video/{provider_task_id}", headers=self._headers()
+            )
+        if not response.is_success:
+            raise RuntimeError(f"可灵文生视频查询失败 {response.status_code}: {response.text}")
+        data = response.json()
+        task = data.get("data", {})
+        status = task.get("task_status") or task.get("status") or "processing"
+        works = task.get("task_result", {}).get("videos") or task.get("works") or []
+        video = works[0] if works else {}
+        return {
+            "status": status,
+            "video_url": video.get("url"),
+            "cover_url": video.get("cover_image_url"),
+            "error": task.get("task_status_msg") or task.get("message"),
+        }
+
     async def get_image_to_video_status(self, provider_task_id: str) -> dict:
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.get(

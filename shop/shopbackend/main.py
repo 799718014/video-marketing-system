@@ -325,10 +325,11 @@ async def import_kling_library_video(scene_id: int, payload: KlingLibraryVideoIm
 async def queue_generation_tasks(storyboard_id: int) -> list[dict]:
     storyboard = require_storyboard(storyboard_id)
     for scene in storyboard["scenes"]:
-        if scene["generation_strategy"] == "image_to_video":
-            if not scene["asset_id"] or not scene["asset_url"]:
-                raise HTTPException(status_code=422, detail=f"分镜 {scene['scene_no']} 未关联商品图")
-            require_public_asset_url(scene["asset_url"])
+        if scene["generation_strategy"] in ("image_to_video", "text_to_video"):
+            if scene["generation_strategy"] == "image_to_video":
+                if not scene["asset_id"] or not scene["asset_url"]:
+                    raise HTTPException(status_code=422, detail=f"分镜 {scene['scene_no']} 未关联商品图")
+                require_public_asset_url(scene["asset_url"])
             await preflight_scene_assets(scene, storyboard["product_id"])
     tasks = db.queue_storyboard_tasks(storyboard_id, KELING_IMAGE_TO_VIDEO_MODEL)
     generation_worker.wake()
@@ -340,13 +341,14 @@ async def queue_candidate_tasks(storyboard_id: int, payload: CandidateTaskReques
     """为每个分镜创建可人工对比的候选片段组，最多四个候选，避免无限并发。"""
     storyboard = require_storyboard(storyboard_id)
     for scene in storyboard["scenes"]:
-        if scene["generation_strategy"] != "image_to_video":
+        if scene["generation_strategy"] not in ("image_to_video", "text_to_video"):
             continue
-        if not scene["asset_url"]:
-            raise HTTPException(status_code=422, detail=f"分镜 {scene['scene_no']} 未关联商品图")
-        require_public_asset_url(scene["asset_url"])
-        for reference in scene["reference_assets"]:
-            require_public_asset_url(reference["url"])
+        if scene["generation_strategy"] == "image_to_video":
+            if not scene["asset_url"]:
+                raise HTTPException(status_code=422, detail=f"分镜 {scene['scene_no']} 未关联商品图")
+            require_public_asset_url(scene["asset_url"])
+            for reference in scene["reference_assets"]:
+                require_public_asset_url(reference["url"])
         await preflight_scene_assets(scene, storyboard["product_id"])
     tasks = db.queue_storyboard_tasks(
         storyboard_id, KELING_IMAGE_TO_VIDEO_MODEL, payload.candidate_count, payload.force_new,
@@ -435,6 +437,8 @@ async def refresh_generation_task(task_id: int) -> dict:
         if task.get("source_type") == "kling_library":
             item = await keling.get_library_video(task["source_provider_task_id"], task["source_task_type"])
             result = {"status": item["status"], "video_url": item.get("video_url"), "cover_url": item.get("cover_url"), "error": item.get("error")}
+        elif task.get("generation_strategy") == "text_to_video":
+            result = await keling.get_text_to_video_status(task["provider_task_id"])
         else:
             result = await keling.get_image_to_video_status(task["provider_task_id"])
     except Exception as error:

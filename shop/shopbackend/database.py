@@ -7,7 +7,7 @@ import time
 import uuid
 from typing import Any, Optional
 
-from config import DATABASE_PATH, ensure_directories
+from config import DATABASE_PATH, KELING_IMAGE_TO_VIDEO_MODEL, KELING_TEXT_TO_VIDEO_MODEL, ensure_directories
 
 logger = logging.getLogger(__name__)
 
@@ -191,6 +191,7 @@ class ShopDatabase:
             self._ensure_column(conn, "storyboards", "final_composition_status", "TEXT NOT NULL DEFAULT 'not_started'")
             self._ensure_column(conn, "storyboards", "final_composition_error", "TEXT")
             self._ensure_column(conn, "storyboard_scenes", "postprocess_config_json", "TEXT NOT NULL DEFAULT '{}'")
+            self._ensure_column(conn, "storyboard_scenes", "scene_prompt", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "generation_tasks", "composed_video_url", "TEXT")
             self._ensure_column(conn, "generation_tasks", "composition_status", "TEXT NOT NULL DEFAULT 'not_started'")
             self._ensure_column(conn, "generation_tasks", "composition_error", "TEXT")
@@ -210,6 +211,7 @@ class ShopDatabase:
             self._ensure_column(conn, "generation_tasks", "dispatch_claimed_at", "TEXT")
             self._ensure_column(conn, "generation_tasks", "dispatch_attempts", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(conn, "generation_tasks", "next_dispatch_at", "TEXT")
+            self._ensure_column(conn, "generation_tasks", "generation_strategy", "TEXT NOT NULL DEFAULT 'image_to_video'")
             # 索引在迁移字段补齐后创建，确保旧版数据库升级不会因缺列失败。
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_tasks_candidates ON generation_tasks(scene_id, candidate_group_id, selected)"
@@ -339,12 +341,13 @@ class ShopDatabase:
                 scene_cursor = conn.execute(
                     """INSERT INTO storyboard_scenes
                     (storyboard_id, scene_no, scene_type, target_duration, asset_id,
-                     generation_strategy, motion_prompt, identity_constraints_json, postprocess_layers_json,
-                     postprocess_config_json)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                     generation_strategy, motion_prompt, scene_prompt, identity_constraints_json,
+                     postprocess_layers_json, postprocess_config_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         storyboard_id, scene["scene_no"], scene["scene_type"], scene["target_duration"],
                         scene.get("asset_id"), scene["generation_strategy"], scene.get("motion_prompt", ""),
+                        scene.get("scene_prompt", ""),
                         self._json(scene.get("identity_constraints", [])), self._json(scene.get("postprocess_layers", [])),
                         self._json(scene.get("postprocess_config", {})),
                     ),
@@ -419,7 +422,7 @@ class ShopDatabase:
     def update_scene(self, scene_id: int, values: dict[str, Any]) -> Optional[dict[str, Any]]:
         allowed = {
             "asset_id", "scene_type", "target_duration", "generation_strategy", "motion_prompt",
-            "identity_constraints", "reference_assets", "postprocess_layers", "postprocess_config",
+            "scene_prompt", "identity_constraints", "reference_assets", "postprocess_layers", "postprocess_config",
         }
         update_values = {key: value for key, value in values.items() if key in allowed and value is not None}
         if not update_values:
@@ -452,7 +455,7 @@ class ShopDatabase:
             scenes = conn.execute(
                 """SELECT s.*, a.url AS asset_url
                 FROM storyboard_scenes s LEFT JOIN product_assets a ON a.id = s.asset_id
-                WHERE s.storyboard_id = ? AND s.generation_strategy = 'image_to_video'
+                WHERE s.storyboard_id = ? AND s.generation_strategy IN ('image_to_video', 'text_to_video')
                 ORDER BY s.scene_no""",
                 (storyboard_id,),
             ).fetchall()
@@ -471,17 +474,22 @@ class ShopDatabase:
                 references = self._list_scene_references(conn, scene["id"])
                 if not references and scene["asset_url"]:
                     references = [{"asset_id": scene["asset_id"], "role": "identity", "sort_order": 0, "url": scene["asset_url"]}]
-                prompt = self._build_motion_prompt(scene, references)
+                prompt = self._build_generation_prompt(scene, references)
+                scene_model = (
+                    KELING_TEXT_TO_VIDEO_MODEL if scene["generation_strategy"] == "text_to_video"
+                    else model
+                )
                 candidate_group_id = uuid.uuid4().hex
                 for candidate_index in range(1, candidate_count + 1):
                     cursor = conn.execute(
                         """INSERT INTO generation_tasks
                         (storyboard_id, scene_id, model, image_url, prompt, status, candidate_group_id,
-                         candidate_index, reference_manifest_json)
-                        VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?)""",
+                         candidate_index, reference_manifest_json, generation_strategy)
+                        VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)""",
                         (
-                            storyboard_id, scene["id"], model, scene["asset_url"] or "", prompt,
+                            storyboard_id, scene["id"], scene_model, scene["asset_url"] or "", prompt,
                             candidate_group_id, candidate_index, self._json(references),
+                            scene["generation_strategy"],
                         ),
                     )
                     self._add_trace_event(
@@ -535,10 +543,13 @@ class ShopDatabase:
             return self.get_generation_task(cursor.lastrowid, conn)
 
     @staticmethod
-    def _build_motion_prompt(scene: sqlite3.Row, references: list[dict[str, Any]]) -> str:
+    def _build_generation_prompt(scene: sqlite3.Row, references: list[dict[str, Any]]) -> str:
         constraints = json.loads(scene["identity_constraints_json"])
         constraint_text = "；".join(constraints)
         reference_text = "；".join(f"{item.get('role', 'identity')}参考图" for item in references)
+        if scene["generation_strategy"] == "text_to_video":
+            scene_prompt = scene["scene_prompt"] or scene["motion_prompt"]
+            return f"{scene_prompt}。保持参考商品的形状、材质、颜色、尺寸比例和佩戴位置不变；不得生成文字、价格或品牌 Logo。商品一致性要求：{constraint_text}。参考资产：{reference_text}".strip("。")
         return f"{scene['motion_prompt']}。商品一致性要求：{constraint_text}。参考资产：{reference_text}".strip("。")
 
     def active_provider_task_count(self) -> int:
@@ -845,7 +856,7 @@ class ShopDatabase:
                        WHERE latest.scene_id = s.id AND latest.composed_video_url IS NOT NULL
                        ORDER BY latest.selected DESC, latest.id DESC LIMIT 1
                    )
-                   WHERE s.storyboard_id = ? AND s.generation_strategy = 'image_to_video'
+                   WHERE s.storyboard_id = ? AND s.generation_strategy IN ('image_to_video', 'text_to_video')
                    ORDER BY s.scene_no""",
                 (storyboard_id,),
             ).fetchall()

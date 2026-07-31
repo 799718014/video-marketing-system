@@ -71,17 +71,23 @@ class GenerationWorker:
                 pass
 
     async def _submit(self, task: dict) -> None:
+        strategy = task.get("generation_strategy", "image_to_video")
         try:
-            references = [reference["url"] for reference in task.get("reference_manifest", [])]
-            result = await keling.create_image_to_video(
-                task["image_url"], task["prompt"], task["model"], references, task["submission_key"],
-            )
+            if strategy == "text_to_video":
+                result = await keling.create_text_to_video(
+                    task["prompt"], task["model"], task["submission_key"],
+                )
+            else:
+                references = [reference["url"] for reference in task.get("reference_manifest", [])]
+                result = await keling.create_image_to_video(
+                    task["image_url"], task["prompt"], task["model"], references, task["submission_key"],
+                )
         except Exception as error:
             db.release_submission_claim(task["id"], task["submission_key"], str(error))
-            logger.warning("图生视频任务 %s 提交失败，已安排重试：%s", task["id"], error)
+            logger.warning("视频生成任务 %s 提交失败，已安排重试：%s", task["id"], error)
             return
         if not db.complete_submission_claim(task["id"], task["submission_key"], result):
-            logger.error("图生视频任务 %s 提交结果未写入；将依靠幂等键恢复", task["id"])
+            logger.error("视频生成任务 %s 提交结果未写入；将依靠幂等键恢复", task["id"])
 
     async def _refresh_active_tasks_if_due(self) -> None:
         now = asyncio.get_running_loop().time()
@@ -96,11 +102,13 @@ class GenerationWorker:
                         "status": item["status"], "video_url": item.get("video_url"),
                         "cover_url": item.get("cover_url"), "error": item.get("error"),
                     }
+                elif task.get("generation_strategy") == "text_to_video":
+                    result = await keling.get_text_to_video_status(task["provider_task_id"])
                 else:
                     result = await keling.get_image_to_video_status(task["provider_task_id"])
                 db.update_generation_task(task["id"], **result)
             except Exception as error:
-                logger.warning("图生视频任务 %s 状态刷新失败：%s", task["id"], error)
+                logger.warning("视频生成任务 %s 状态刷新失败：%s", task["id"], error)
 
 
 generation_worker = GenerationWorker()

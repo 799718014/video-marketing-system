@@ -1,4 +1,4 @@
-export type AssetType = 'main' | 'angle' | 'detail' | 'lifestyle' | 'transparent' | 'logo'
+export type AssetType = 'main' | 'angle' | 'detail' | 'lifestyle' | 'transparent' | 'logo' | 'scene_ref'
 
 export interface Product {
   id: number
@@ -31,7 +31,7 @@ export interface PostprocessConfig {
 export interface SceneReference {
   id?: number
   asset_id: number
-  role: 'identity' | 'material' | 'detail' | 'element' | 'logo'
+  role: 'identity' | 'material' | 'detail' | 'element' | 'logo' | 'scene_setting'
   sort_order: number
   asset_type?: AssetType
   url?: string
@@ -44,8 +44,9 @@ export interface Scene {
   target_duration: number
   asset_id?: number
   asset_url?: string
-  generation_strategy: 'image_to_video'
+  generation_strategy: 'image_to_video' | 'text_to_video'
   motion_prompt: string
+  scene_prompt?: string
   identity_constraints: string[]
   reference_assets: SceneReference[]
   postprocess_layers: string[]

@@ -2,7 +2,7 @@ import { FormEvent, useMemo, useState } from 'react'
 import { api, AssetType, Product, ProductAsset } from '../api'
 
 const _assetTypes: Array<[AssetType, string]> = [
-  ['main', '主图'], ['angle', '角度图'], ['detail', '细节图'], ['lifestyle', '场景图'], ['transparent', '透明底商品图'], ['logo', 'Logo'],
+  ['main', '主图'], ['angle', '角度图'], ['detail', '细节图'], ['lifestyle', '场景图'], ['transparent', '透明底商品图'], ['logo', 'Logo'], ['scene_ref', '场景设定图'],
 ]
 
 export interface UseProductReturn {

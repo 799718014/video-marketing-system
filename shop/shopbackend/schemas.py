@@ -13,6 +13,7 @@ class AssetType(str, Enum):
     lifestyle = "lifestyle"
     transparent = "transparent"
     logo = "logo"
+    scene_ref = "scene_ref"
 
 
 class SceneType(str, Enum):
@@ -26,6 +27,7 @@ class SceneType(str, Enum):
 
 class GenerationStrategy(str, Enum):
     image_to_video = "image_to_video"
+    text_to_video = "text_to_video"
     template_composite = "template_composite"
 
 
@@ -35,6 +37,7 @@ class ReferenceRole(str, Enum):
     detail = "detail"
     element = "element"
     logo = "logo"
+    scene_setting = "scene_setting"
 
 
 class SceneReferenceCreate(BaseModel):
