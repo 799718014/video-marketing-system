@@ -1,5 +1,7 @@
 # 商品资产驱动图生视频服务（P0）
 
+面向运营与业务人员的功能说明请见 [PRODUCT_OVERVIEW.md](PRODUCT_OVERVIEW.md)。
+
 该服务实现“真实商品资产锁定身份 + 图生视频生成运动 + 后期图层配置”的后端基础能力。
 
 Windows 10 新机部署请见 [DEPLOYMENT_WINDOWS10.md](DEPLOYMENT_WINDOWS10.md)。

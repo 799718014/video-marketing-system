@@ -80,6 +80,8 @@ class StoryboardSceneCreate(BaseModel):
     asset_id: Optional[int] = None
     generation_strategy: GenerationStrategy = GenerationStrategy.image_to_video
     motion_prompt: str = Field(default="", max_length=2000)
+    # 文生视频的场景、人物、动作与镜头描述；图生视频仍使用 motion_prompt。
+    scene_prompt: str = Field(default="", max_length=2000)
     identity_constraints: list[str] = Field(default_factory=list)
     reference_assets: list[SceneReferenceCreate] = Field(default_factory=list, max_length=8)
     postprocess_layers: list[str] = Field(
@@ -99,6 +101,7 @@ class StoryboardSceneUpdate(BaseModel):
     target_duration: Optional[float] = Field(default=None, gt=0, le=5)
     generation_strategy: Optional[GenerationStrategy] = None
     motion_prompt: Optional[str] = Field(default=None, max_length=2000)
+    scene_prompt: Optional[str] = Field(default=None, max_length=2000)
     identity_constraints: Optional[list[str]] = None
     reference_assets: Optional[list[SceneReferenceCreate]] = Field(default=None, max_length=8)
     postprocess_layers: Optional[list[str]] = None
