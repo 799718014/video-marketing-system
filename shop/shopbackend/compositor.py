@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import subprocess
@@ -28,17 +29,75 @@ class DeterministicCompositor:
     CANVAS_HEIGHT = 1920
     CANVAS_FPS = 30
 
+    # 合成管线版本：修改模板逻辑时应递增，使旧缓存自然失效。
+    _CACHE_VERSION = "v1"
+
+    @property
+    def _cache_dir(self) -> Path:
+        path = OUTPUT_DIR / "_cache"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def _compute_cache_key(self, context: dict[str, Any]) -> str:
+        """基于视频底片、素材 SHA-256 和文字层的内容寻址缓存键。"""
+        layers = sorted(context["postprocess_layers"])
+        config = context["postprocess_config"]
+        target_duration = context["target_duration"]
+
+        transparent_asset = self._select_asset(context, config.get("transparent_asset_id"), "transparent")
+        logo_asset = self._select_asset(context, config.get("logo_asset_id"), "logo")
+
+        transparent_sha = transparent_asset["metadata"].get("preflight", {}).get("result", {}).get("sha256", "") if transparent_asset else ""
+        logo_sha = logo_asset["metadata"].get("preflight", {}).get("result", {}).get("sha256", "") if logo_asset else ""
+
+        text_layers = self._text_layers(context, set(layers))
+
+        payload = {
+            "version": self._CACHE_VERSION,
+            "video_url": context["video_url"],
+            "target_duration": target_duration,
+            "layers": layers,
+            "config": config,
+            "transparent_sha256": transparent_sha,
+            "logo_sha256": logo_sha,
+            "text_layers": text_layers,
+        }
+        raw = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+        return hashlib.sha256(raw.encode()).hexdigest()
+
+    def _cache_hit(self, cache_key: str, task_output: Path, target_duration: float) -> str | None:
+        """缓存命中时复制到任务输出路径并验证；损坏或规格不符则删除缓存返回 None。"""
+        cached = self._cache_dir / f"{cache_key}.mp4"
+        if not cached.is_file():
+            return None
+        try:
+            shutil.copy2(cached, task_output)
+            self._validate_output_video(task_output, target_duration)
+            return f"{PUBLIC_BASE_URL}/outputs/{task_output.name}"
+        except CompositionError:
+            task_output.unlink(missing_ok=True)
+            cached.unlink(missing_ok=True)
+            return None
+
     def compose_scene(self, context: dict[str, Any]) -> str:
         if not context.get("video_url"):
             raise CompositionError("图生视频尚未生成完成，不能进行后期合成")
         self._require_ffmpeg()
         layers = set(context["postprocess_layers"])
         config = context["postprocess_config"]
+        target_duration = context["target_duration"]
+        output_file = OUTPUT_DIR / f"task_{context['id']}_composed.mp4"
+
+        # 内容寻址缓存：相同输入 → 跳过 FFmpeg 重编码。
+        cache_key = self._compute_cache_key(context)
+        cached_result = self._cache_hit(cache_key, output_file, target_duration)
+        if cached_result:
+            return cached_result
 
         with tempfile.TemporaryDirectory(prefix=f"compose_task_{context['id']}_", dir=DATA_DIR) as temporary:
             workdir = Path(temporary)
             video_file = self._materialize(context["video_url"], workdir, "source.mp4")
-            self._validate_source_video(video_file, context["target_duration"])
+            self._validate_source_video(video_file, target_duration)
             transparent_asset = self._select_asset(context, config.get("transparent_asset_id"), "transparent")
             logo_asset = self._select_asset(context, config.get("logo_asset_id"), "logo")
 
@@ -82,7 +141,6 @@ class DeterministicCompositor:
                 )
                 current = next_label
 
-            output_file = OUTPUT_DIR / f"task_{context['id']}_composed.mp4"
             command = [FFMPEG_BINARY, "-y", "-i", str(video_file)]
             for image in input_files[1:]:
                 command.extend(["-loop", "1", "-i", str(image)])
@@ -90,10 +148,13 @@ class DeterministicCompositor:
                 "-filter_complex", ";".join(filter_steps),
                 "-map", f"[{current}]", "-map", "0:a?",
                 "-c:v", "libx264", "-r", str(self.CANVAS_FPS), "-pix_fmt", "yuv420p", "-c:a", "aac",
-                "-t", str(context["target_duration"]), "-shortest", "-movflags", "+faststart", str(output_file),
+                "-t", str(target_duration), "-shortest", "-movflags", "+faststart", str(output_file),
             ])
             self._run_ffmpeg(command)
-            self._validate_output_video(output_file, context["target_duration"])
+            self._validate_output_video(output_file, target_duration)
+
+            # 编码成功后存入内容寻址缓存，供后续相同输入复用。
+            shutil.copy2(output_file, self._cache_dir / f"{cache_key}.mp4")
             return f"{PUBLIC_BASE_URL}/outputs/{output_file.name}"
 
     def merge_storyboard(self, storyboard_id: int, tasks: list[dict[str, Any]]) -> str:
