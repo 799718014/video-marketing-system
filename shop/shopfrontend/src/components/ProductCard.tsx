@@ -13,13 +13,13 @@ export function ProductCard({ op, prod }: Props) {
   const disabled = Boolean(busy)
 
   function submitProduct(event: FormEvent) {
-    void createProduct(event, run).then(() => {
-      setNotice(`已创建商品「${productForm.name}」，请补充商品图片、透明底图和 Logo。`)
-    })
+    void createProduct(event, run)
+      .then(() => setNotice(`已创建商品「${productForm.name}」，请补充商品图片、透明底图和 Logo。`))
+      .catch(() => undefined)
   }
 
   function doLoadProduct() {
-    void loadProduct(run).then(() => setNotice('商品资产已加载。'))
+    void loadProduct(run).then(() => setNotice('商品资产已加载。')).catch(() => undefined)
   }
 
   return (

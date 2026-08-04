@@ -1,3 +1,4 @@
+import { useEffect, useMemo, useState } from 'react'
 import { OperationHandle } from '../hooks/useOperation'
 import { UseProductReturn } from '../hooks/useProduct'
 import { UseStoryboardReturn } from '../hooks/useStoryboard'
@@ -7,6 +8,18 @@ interface Props {
   op: OperationHandle
   prod: UseProductReturn
   board: UseStoryboardReturn
+}
+
+const activeGenerationStatuses = new Set(['queued', 'submitted', 'processing', 'pending'])
+
+function elapsedLabel(startedAt?: string, now = Date.now()) {
+  if (!startedAt) return '刚刚开始'
+  const timestamp = Date.parse(startedAt.replace(' ', 'T'))
+  if (Number.isNaN(timestamp)) return '生成中'
+  const elapsedSeconds = Math.max(0, Math.floor((now - timestamp) / 1000))
+  const minutes = Math.floor(elapsedSeconds / 60)
+  const seconds = elapsedSeconds % 60
+  return minutes ? `已等待 ${minutes} 分 ${seconds} 秒` : `已等待 ${seconds} 秒`
 }
 
 export function TaskDashboard({ op, prod: _prod, board }: Props) {
@@ -22,21 +35,59 @@ export function TaskDashboard({ op, prod: _prod, board }: Props) {
     loadKlingLibrary, importLibraryVideo,
   } = board
 
+  const [now, setNow] = useState(() => Date.now())
+  const activeTasks = useMemo(
+    () => tasks.filter((task) => activeGenerationStatuses.has(task.status.toLowerCase()) && !task.video_url),
+    [tasks],
+  )
+  const activeScenes = useMemo(() => {
+    if (!storyboard) return []
+    return storyboard.scenes.flatMap((scene) => {
+      const sceneTasks = activeTasks.filter((task) => task.scene_id === scene.id)
+      return sceneTasks.length ? [{ scene, tasks: sceneTasks }] : []
+    })
+  }, [activeTasks, storyboard])
+  const incompleteCompositionScenes = useMemo(() => {
+    if (!storyboard) return []
+    return storyboard.scenes
+      .filter((scene) => !tasks.some((task) => (
+        task.scene_id === scene.id
+        && Boolean(task.selected)
+        && task.composition_status === 'succeeded'
+        && Boolean(task.composed_video_url)
+      )))
+      .map((scene) => scene.scene_no)
+  }, [storyboard, tasks])
+
+  useEffect(() => {
+    if (!activeTasks.length) return
+    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [activeTasks.length])
+
+  useEffect(() => {
+    if (!storyboard || !activeTasks.length) return
+    const timer = window.setInterval(() => {
+      void refreshBoard().catch(() => undefined)
+    }, 15_000)
+    return () => window.clearInterval(timer)
+  }, [storyboard?.id, activeTasks.length])
+
   const disabled = Boolean(busy)
 
   function doQueueTasks() {
     if (!storyboard) return
-    void queueTasks(run).then(() => setNotice('已创建图生视频任务。'))
+    void queueTasks(run).then(() => setNotice('已创建图生视频任务。')).catch(() => undefined)
   }
 
   function doQueueCandidates() {
     if (!storyboard) return
-    void queueCandidates(run).then(() => setNotice('候选任务已创建，请逐个提交并选片。'))
+    void queueCandidates(run).then(() => setNotice('候选任务已创建，请逐个提交并选片。')).catch(() => undefined)
   }
 
   function doDispatchNext() {
     if (!storyboard) return
-    void dispatchNext(run).then(() => setNotice('后台 Worker 已唤醒。'))
+    void dispatchNext(run).then(() => setNotice('后台 Worker 已唤醒。')).catch(() => undefined)
   }
 
   function doReload() {
@@ -44,22 +95,28 @@ export function TaskDashboard({ op, prod: _prod, board }: Props) {
   }
 
   function doLoadTrace() {
-    void loadTrace(run).then(() => setNotice(`已加载追溯事件。`))
+    void loadTrace(run).then(() => setNotice(`已加载追溯事件。`)).catch(() => undefined)
   }
 
   function doComposeFinal() {
     if (!storyboard) return
-    void composeFinal(run).then(() => setNotice('最终视频已按分镜顺序合并。'))
+    if (incompleteCompositionScenes.length) {
+      setNotice(`请先完成分镜 ${incompleteCompositionScenes.join('、')} 的选片和后期合成。`)
+      return
+    }
+    void composeFinal(run).then(() => setNotice('最终视频已按分镜顺序合并。')).catch(() => undefined)
   }
 
   function doLoadLibrary(page = libraryPage) {
-    void loadKlingLibrary(page, run).then(() => setNotice(`已加载可灵视频库第 ${page} 页。`))
+    void loadKlingLibrary(page, run).then(() => setNotice(`已加载可灵视频库第 ${page} 页。`)).catch(() => undefined)
   }
 
   function doImportLibrary(item: KlingLibraryItem) {
     const sceneId = libraryTargetSceneId ?? storyboard?.scenes[0]?.id
     if (!sceneId) return setNotice('请先保存分镜，并选择要导入的视频目标分镜。')
-    void importLibraryVideo(item, run).then(() => setNotice(`已将可灵任务 ${item.task_id} 导入为候选片段，请完成质检和选片。`))
+    void importLibraryVideo(item, run)
+      .then(() => setNotice(`已将可灵任务 ${item.task_id} 导入为候选片段，请完成质检和选片。`))
+      .catch(() => undefined)
   }
 
   return (
@@ -72,8 +129,36 @@ export function TaskDashboard({ op, prod: _prod, board }: Props) {
         <button onClick={doDispatchNext} disabled={!storyboard || disabled}>提交下一个任务</button>
         <button onClick={doReload} disabled={!storyboard || disabled}>刷新面板</button>
         <button onClick={doLoadTrace} disabled={!storyboard || disabled}>查看追溯</button>
-        <button className="primary" onClick={doComposeFinal} disabled={!storyboard || disabled}>合并最终视频</button>
+        <button
+          className="primary"
+          onClick={doComposeFinal}
+          disabled={!storyboard || disabled || incompleteCompositionScenes.length > 0}
+          title={incompleteCompositionScenes.length ? `请先完成分镜 ${incompleteCompositionScenes.join('、')} 的后期合成` : undefined}
+        >合并最终视频</button>
       </div>
+
+      {storyboard && incompleteCompositionScenes.length > 0 && (
+        <p className="composition-readiness" role="status">
+          请先对已选片段执行“后期合成”：分镜 {incompleteCompositionScenes.join('、')}。
+        </p>
+      )}
+
+      {activeScenes.length > 0 && <div className="generation-status" role="status" aria-live="polite">
+        <div><b>正在生成</b><small>每 15 秒自动同步状态</small></div>
+        <div className="generation-status-list">
+          {activeScenes.map(({ scene, tasks: sceneTasks }) => {
+            const startedAt = sceneTasks.reduce<string | undefined>((earliest, task) => {
+              if (!earliest || (task.created_at && task.created_at < earliest)) return task.created_at
+              return earliest
+            }, undefined)
+            return <div className="generation-status-item" key={scene.id}>
+              <span className="generation-spinner" aria-hidden="true" />
+              <strong>分镜 {scene.scene_no} 正在生成</strong>
+              <span>{sceneTasks.length} 个候选任务 · {elapsedLabel(startedAt, now)}</span>
+            </div>
+          })}
+        </div>
+      </div>}
 
       {/* 可灵视频库候选导入 */}
       <div className="library-panel">
@@ -96,7 +181,7 @@ export function TaskDashboard({ op, prod: _prod, board }: Props) {
             <div>
               <b>分镜 {task.scene_no} · 候选 {task.candidate_index ?? 1} · 任务 #{task.id}</b>
               <p>
-                <span className={`badge ${task.status}`}>图生：{task.status}</span>
+                <span className={`badge ${task.status}`}>图生：{activeGenerationStatuses.has(task.status.toLowerCase()) ? '生成中' : task.status}</span>
                 <span className={`badge ${task.composition_status}`}>后期：{task.composition_status ?? 'not_started'}</span>
                 <span className={`badge ${task.quality_status}`}>质检：{task.quality_status ?? 'not_checked'}{task.quality_decision ? ` / ${task.quality_decision}` : ''}</span>
                 {task.selected && <span className="badge succeeded">已选片</span>}

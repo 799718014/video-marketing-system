@@ -20,12 +20,14 @@ from config import (
 from database import db
 from keling import keling
 from preflight import PreflightError, asset_preflight
-from qiniu_storage import QiniuStorageError, qiniu_storage
+from oss_storage import OssStorageError, oss_storage
+from prompt_generator import PromptGeneratorError, prompt_generator
 from quality_service import quality_reviewer
 from worker import generation_worker
 from schemas import (
     AssetType, CandidateSelectionRequest, CandidateTaskRequest, ManualQualityReviewRequest,
-    KlingLibraryVideoImportRequest, ProductAssetCreate, ProductCreate, StoryboardCreate, StoryboardSceneUpdate,
+    KlingLibraryVideoImportRequest, ProductAssetCreate, ProductCreate, ScenePromptReferenceRequest,
+    ScenePromptReferenceResponse, StoryboardCreate, StoryboardSceneUpdate,
 )
 
 
@@ -138,7 +140,7 @@ async def preflight_scene_assets(scene: dict, product_id: int) -> None:
 
 
 def require_public_asset_url(url: str) -> None:
-    """只允许可灵从配置的七牛云 CDN 域名拉取商品素材。"""
+    """只允许可灵从配置的 OSS 公网 HTTPS 域名拉取商品素材。"""
     parsed = urlparse(url)
     asset_base = urlparse(KELING_ASSET_BASE_URL)
     base_path = asset_base.path.rstrip("/")
@@ -149,7 +151,7 @@ def require_public_asset_url(url: str) -> None:
     if not matches_asset_base:
         raise HTTPException(
             status_code=422,
-            detail="商品图必须位于 KELING_ASSET_BASE_URL 配置的七牛云 HTTPS 域名下；请通过 /assets/upload 上传后再提交生成",
+            detail="商品图必须位于 KELING_ASSET_BASE_URL 配置的 OSS 公网 HTTPS 域名下；请通过 /assets/upload 上传后再提交生成",
         )
 
 
@@ -161,7 +163,7 @@ def health() -> dict:
         "public_base_url": PUBLIC_BASE_URL,
         "keling_asset_base_url": KELING_ASSET_BASE_URL,
         "keling_configured": bool(os.environ.get("KELING_API_KEY")),
-        "qiniu_configured": qiniu_storage.configured,
+        "oss_configured": oss_storage.configured,
         "generation_worker_enabled": generation_worker.enabled,
         "generation_worker_running": generation_worker.running,
     }
@@ -202,12 +204,13 @@ async def upload_asset(
     asset_type: str = Form(...),
     is_primary: bool = Form(False),
 ) -> dict:
-    """先在本地预检，再上传至七牛云 Kodo，并以 CDN URL 登记商品资产。"""
+    """上传商品素材。
+
+    配置了完整的阿里云 OSS 信息时，素材会上传至 OSS 并登记公网地址；本地开发
+    未配置七牛云时，保留在 ``UPLOAD_DIR`` 并登记本机静态资源地址。这样本地的
+    商品、素材和分镜编辑流程不再因为可选的云存储配置而被阻断。
+    """
     require_product(product_id)
-    try:
-        qiniu_storage.require_config()
-    except QiniuStorageError as error:
-        raise HTTPException(status_code=503, detail=str(error)) from error
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=422, detail="仅支持图片资产")
     try:
@@ -221,24 +224,40 @@ async def upload_asset(
         shutil.copyfileobj(file.file, buffer)
     try:
         # 本地先做格式、尺寸和透明通道检查，避免无效素材占用云端空间。
-        await asset_preflight.inspect_url(f"{PUBLIC_BASE_URL}/assets/{filename}", normalized_asset_type)
-        object_key = qiniu_storage.build_object_key(product_id, filename)
-        uploaded = await asyncio.to_thread(qiniu_storage.upload_image, destination, object_key)
-        result = await asset_preflight.inspect_url(uploaded["url"], normalized_asset_type)
+        local_url = f"{PUBLIC_BASE_URL}/assets/{filename}"
+        local_result = await asset_preflight.inspect_url(local_url, normalized_asset_type)
+        metadata = {
+            "filename": file.filename,
+            "content_type": file.content_type,
+            "preflight": {"status": "passed", "result": local_result, "error": None},
+        }
+        url = local_url
+
+        if oss_storage.configured:
+            object_key = oss_storage.build_object_key(product_id, filename)
+            uploaded = await asyncio.to_thread(oss_storage.upload_image, destination, object_key)
+            url = uploaded["url"]
+            result = await asset_preflight.inspect_url(url, normalized_asset_type)
+            metadata.update({
+                "storage": "oss",
+                "oss_key": uploaded["key"],
+                "oss_etag": uploaded.get("etag"),
+                "oss_request_id": uploaded.get("request_id"),
+                "preflight": {"status": "passed", "result": result, "error": None},
+            })
+        else:
+            metadata["storage"] = "local"
+
         return db.create_asset(product_id, {
             "asset_type": normalized_asset_type,
-            "url": uploaded["url"],
+            "url": url,
             "is_primary": is_primary,
-            "metadata": {
-                "filename": file.filename, "content_type": file.content_type,
-                "qiniu_key": uploaded["key"], "qiniu_hash": uploaded.get("hash"),
-                "preflight": {"status": "passed", "result": result, "error": None},
-            },
+            "metadata": metadata,
         })
     except PreflightError as error:
         destination.unlink(missing_ok=True)
         raise HTTPException(status_code=422, detail=f"商品素材预检失败: {error}") from error
-    except QiniuStorageError as error:
+    except OssStorageError as error:
         destination.unlink(missing_ok=True)
         raise HTTPException(status_code=503, detail=str(error)) from error
     except Exception:
@@ -251,6 +270,18 @@ async def run_asset_preflight(product_id: int, asset_id: int) -> dict:
     """对历史资产或外链刷新后的素材执行显式预检。"""
     require_product(product_id)
     return await preflight_registered_asset(asset_id, product_id)
+
+
+@app.post("/api/products/{product_id}/scene-prompt-reference", response_model=ScenePromptReferenceResponse)
+async def generate_scene_prompt_reference(
+    product_id: int, payload: ScenePromptReferenceRequest,
+) -> dict[str, str]:
+    """根据商品事实生成可编辑的 A-Roll、B-Roll 和模型 Prompt，不保存、不创建视频任务。"""
+    product = require_product(product_id)
+    try:
+        return await prompt_generator.generate(product, payload.model_dump())
+    except PromptGeneratorError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
 
 
 @app.post("/api/products/{product_id}/storyboards", status_code=201)

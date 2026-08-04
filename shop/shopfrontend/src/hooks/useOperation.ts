@@ -21,6 +21,8 @@ export function useOperation(): OperationHandle {
       await action()
     } catch (error) {
       setNotice(messageOf(error))
+      // 调用方只有在操作真实完成后才应展示成功提示。
+      throw error
     } finally {
       setBusy(null)
     }

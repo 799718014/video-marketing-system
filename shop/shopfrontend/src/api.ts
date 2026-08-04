@@ -45,12 +45,21 @@ export interface Scene {
   asset_id?: number
   asset_url?: string
   generation_strategy: 'image_to_video' | 'text_to_video'
+  narration: string
+  visual_description: string
+  ai_prompt: string
   motion_prompt: string
   scene_prompt?: string
   identity_constraints: string[]
   reference_assets: SceneReference[]
   postprocess_layers: string[]
   postprocess_config: PostprocessConfig
+}
+
+export interface ScenePromptReference {
+  narration: string
+  visual_description: string
+  ai_prompt: string
 }
 
 export interface Storyboard {
@@ -80,6 +89,8 @@ export interface GenerationTask {
   quality_status?: string
   quality_decision?: string | null
   error?: string | null
+  created_at?: string
+  updated_at?: string
 }
 
 export interface TraceEvent {
@@ -148,6 +159,14 @@ export const api = {
   },
   createStoryboard: (productId: number, title: string, scenes: Scene[]) => request<Storyboard>(`/api/products/${productId}/storyboards`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title, scenes }),
+  }),
+  generateScenePromptReference: (productId: number, scene: Scene) => request<ScenePromptReference>(`/api/products/${productId}/scene-prompt-reference`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+      scene_no: scene.scene_no,
+      scene_type: scene.scene_type,
+      target_duration: scene.target_duration,
+      generation_strategy: scene.generation_strategy,
+    }),
   }),
   getStoryboard: (id: number) => request<Storyboard>(`/api/storyboards/${id}`),
   getKlingVideoLibrary: (taskType: 'text2video' | 'image2video', pageNum = 1, pageSize = 6) =>

@@ -17,6 +17,13 @@ export function createDraftScene(sceneNo: number, assets: ProductAsset[], sceneT
     target_duration: 5,
     asset_id: main?.id,
     generation_strategy: isLifestyle ? 'text_to_video' : 'image_to_video',
+    narration: isLifestyle ? '把美好细节，留在每一个靠近的瞬间。' : '细节到位，质感自然呈现。',
+    visual_description: isLifestyle
+      ? '人物在自然生活场景中佩戴商品，镜头由中景缓慢推进至商品细节，柔和自然光。'
+      : '商品主体置于干净背景中，镜头缓慢推进，突出材质、轮廓和细节。',
+    ai_prompt: isLifestyle
+      ? '自然生活场景中展示参考商品，人物自然使用或佩戴商品，镜头由中景缓慢推进至商品细节，柔和自然光，真实质感，竖版构图，无文字无价格无品牌 Logo。'
+      : '镜头缓慢推进，保持商品形状、材质、颜色和比例不变，突出真实商品细节，干净背景，柔和布光，竖版构图，无文字无价格无品牌 Logo。',
     motion_prompt: isLifestyle ? '' : '镜头缓慢推进，保持商品形状、材质、颜色和比例不变，突出真实商品细节。',
     scene_prompt: isLifestyle ? '年轻女性坐在明亮化妆台前的镜子前，使用参考图中的商品。镜头由侧脸中景缓慢推进至特写，晨间柔和自然光。保持参考商品的形状、材质、颜色、尺寸比例和佩戴位置不变；不得生成文字、价格或品牌 Logo。' : undefined,
     identity_constraints: ['保持参考图中商品的形状、材质、颜色和比例', '不得增加、删除或替换商品部件'],
@@ -53,6 +60,7 @@ export interface UseStoryboardReturn {
   toggleLayer: (index: number, layer: string) => void
   toggleReference: (index: number, asset: ProductAsset) => void
   selectMainAsset: (index: number, assetId: number) => void
+  generatePromptReference: (index: number, run: (name: string, action: () => Promise<void>) => Promise<void>) => Promise<void>
   updateReferenceRole: (index: number, assetId: number, role: SceneReference['role']) => void
   saveStoryboard: (run: (name: string, action: () => Promise<void>) => Promise<void>) => Promise<void>
   refreshBoard: () => Promise<void>
@@ -95,7 +103,22 @@ export function useStoryboard({ productId, assets }: UseStoryboardInput): UseSto
     if (assets.length && !draftScenes.length && !storyboard) {
       setDraftScenes([createDraftScene(1, assets)])
     }
-  }, [assets])
+  }, [assets, draftScenes.length, storyboard])
+
+  // 用户先添加分镜、再上传主图时，自动将新上传的主图带入尚未选图的分镜，
+  // 避免下拉框一直停留在“请选择”。已经手工选过图的分镜不会被改写。
+  useEffect(() => {
+    const main = assets.find((asset) => Boolean(asset.is_primary)) ?? assets.find((asset) => asset.asset_type === 'main')
+    if (!main || storyboard) return
+    setDraftScenes((scenes) => scenes.map((scene) => {
+      if (scene.asset_id || scene.generation_strategy !== 'image_to_video') return scene
+      return {
+        ...scene,
+        asset_id: main.id,
+        reference_assets: [{ asset_id: main.id, role: 'identity', sort_order: 0 }, ...scene.reference_assets],
+      }
+    }))
+  }, [assets, storyboard])
 
   async function refreshBoard() {
     if (!storyboard) return
@@ -138,6 +161,21 @@ export function useStoryboard({ productId, assets }: UseStoryboardInput): UseSto
     updateScene(index, {
       asset_id: assetId,
       reference_assets: [{ asset_id: assetId, role: 'identity', sort_order: 0 }, ...existing.map((reference, sortOrder) => ({ ...reference, sort_order: sortOrder + 1 }))],
+    })
+  }
+
+  async function generatePromptReference(index: number, run: (name: string, action: () => Promise<void>) => Promise<void>) {
+    const scene = draftScenes[index]
+    if (!scene || !productId) throw new Error('请先创建或加载商品，再生成分镜参考稿')
+    await run(`prompt-reference-${scene.scene_no}`, async () => {
+      const reference = await api.generateScenePromptReference(productId, scene)
+      setDraftScenes((scenes) => scenes.map((item, itemIndex) => itemIndex === index ? {
+        ...item,
+        ...reference,
+        // 保留旧字段同步，确保旧版本接口或已保存的分镜仍按新参考稿提交给可灵。
+        motion_prompt: reference.ai_prompt,
+        scene_prompt: reference.ai_prompt,
+      } : item))
     })
   }
 
@@ -242,7 +280,7 @@ export function useStoryboard({ productId, assets }: UseStoryboardInput): UseSto
     libraryType, setLibraryType, libraryItems, setLibraryItems, libraryPage, setLibraryPage,
     libraryTargetSceneId, setLibraryTargetSceneId,
     setStoryboard, setTasks, setDraftScenes,
-    updateScene, updateConfig, toggleLayer, toggleReference, selectMainAsset, updateReferenceRole,
+    updateScene, updateConfig, toggleLayer, toggleReference, selectMainAsset, generatePromptReference, updateReferenceRole,
     saveStoryboard, refreshBoard, queueTasks, queueCandidates, dispatchNext,
     refreshTask, composeTask, selectCandidate, qualityReview,
     loadTrace, composeFinal,

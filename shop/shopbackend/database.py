@@ -100,6 +100,9 @@ class ShopDatabase:
                     asset_id INTEGER REFERENCES product_assets(id),
                     generation_strategy TEXT NOT NULL,
                     motion_prompt TEXT NOT NULL DEFAULT '',
+                    narration TEXT NOT NULL DEFAULT '',
+                    visual_description TEXT NOT NULL DEFAULT '',
+                    ai_prompt TEXT NOT NULL DEFAULT '',
                     identity_constraints_json TEXT NOT NULL DEFAULT '[]',
                     postprocess_layers_json TEXT NOT NULL DEFAULT '[]',
                     postprocess_config_json TEXT NOT NULL DEFAULT '{}',
@@ -192,6 +195,9 @@ class ShopDatabase:
             self._ensure_column(conn, "storyboards", "final_composition_error", "TEXT")
             self._ensure_column(conn, "storyboard_scenes", "postprocess_config_json", "TEXT NOT NULL DEFAULT '{}'")
             self._ensure_column(conn, "storyboard_scenes", "scene_prompt", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "storyboard_scenes", "narration", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "storyboard_scenes", "visual_description", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "storyboard_scenes", "ai_prompt", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "generation_tasks", "composed_video_url", "TEXT")
             self._ensure_column(conn, "generation_tasks", "composition_status", "TEXT NOT NULL DEFAULT 'not_started'")
             self._ensure_column(conn, "generation_tasks", "composition_error", "TEXT")
@@ -341,13 +347,14 @@ class ShopDatabase:
                 scene_cursor = conn.execute(
                     """INSERT INTO storyboard_scenes
                     (storyboard_id, scene_no, scene_type, target_duration, asset_id,
-                     generation_strategy, motion_prompt, scene_prompt, identity_constraints_json,
+                     generation_strategy, motion_prompt, scene_prompt, narration, visual_description, ai_prompt, identity_constraints_json,
                      postprocess_layers_json, postprocess_config_json)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         storyboard_id, scene["scene_no"], scene["scene_type"], scene["target_duration"],
                         scene.get("asset_id"), scene["generation_strategy"], scene.get("motion_prompt", ""),
                         scene.get("scene_prompt", ""),
+                        scene.get("narration", ""), scene.get("visual_description", ""), scene.get("ai_prompt", ""),
                         self._json(scene.get("identity_constraints", [])), self._json(scene.get("postprocess_layers", [])),
                         self._json(scene.get("postprocess_config", {})),
                     ),
@@ -422,7 +429,8 @@ class ShopDatabase:
     def update_scene(self, scene_id: int, values: dict[str, Any]) -> Optional[dict[str, Any]]:
         allowed = {
             "asset_id", "scene_type", "target_duration", "generation_strategy", "motion_prompt",
-            "scene_prompt", "identity_constraints", "reference_assets", "postprocess_layers", "postprocess_config",
+            "scene_prompt", "narration", "visual_description", "ai_prompt", "identity_constraints",
+            "reference_assets", "postprocess_layers", "postprocess_config",
         }
         update_values = {key: value for key, value in values.items() if key in allowed and value is not None}
         if not update_values:
@@ -548,9 +556,10 @@ class ShopDatabase:
         constraint_text = "；".join(constraints)
         reference_text = "；".join(f"{item.get('role', 'identity')}参考图" for item in references)
         if scene["generation_strategy"] == "text_to_video":
-            scene_prompt = scene["scene_prompt"] or scene["motion_prompt"]
+            scene_prompt = scene["ai_prompt"] or scene["scene_prompt"] or scene["motion_prompt"]
             return f"{scene_prompt}。保持参考商品的形状、材质、颜色、尺寸比例和佩戴位置不变；不得生成文字、价格或品牌 Logo。商品一致性要求：{constraint_text}。参考资产：{reference_text}".strip("。")
-        return f"{scene['motion_prompt']}。商品一致性要求：{constraint_text}。参考资产：{reference_text}".strip("。")
+        ai_prompt = scene["ai_prompt"] or scene["motion_prompt"] or scene["scene_prompt"]
+        return f"{ai_prompt}。商品一致性要求：{constraint_text}。参考资产：{reference_text}".strip("。")
 
     def active_provider_task_count(self) -> int:
         """按 API Key 全局统计活跃任务，不能只限制单个分镜批次。"""

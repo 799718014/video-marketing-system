@@ -79,6 +79,10 @@ class StoryboardSceneCreate(BaseModel):
     target_duration: float = Field(gt=0, le=5)
     asset_id: Optional[int] = None
     generation_strategy: GenerationStrategy = GenerationStrategy.image_to_video
+    # A-Roll 供后续 TTS/字幕使用；B-Roll 供创作者理解和审核；ai_prompt 才会提交给视频模型。
+    narration: str = Field(default="", max_length=1000)
+    visual_description: str = Field(default="", max_length=2000)
+    ai_prompt: str = Field(default="", max_length=2000)
     motion_prompt: str = Field(default="", max_length=2000)
     # 文生视频的场景、人物、动作与镜头描述；图生视频仍使用 motion_prompt。
     scene_prompt: str = Field(default="", max_length=2000)
@@ -100,12 +104,30 @@ class StoryboardSceneUpdate(BaseModel):
     scene_type: Optional[SceneType] = None
     target_duration: Optional[float] = Field(default=None, gt=0, le=5)
     generation_strategy: Optional[GenerationStrategy] = None
+    narration: Optional[str] = Field(default=None, max_length=1000)
+    visual_description: Optional[str] = Field(default=None, max_length=2000)
+    ai_prompt: Optional[str] = Field(default=None, max_length=2000)
     motion_prompt: Optional[str] = Field(default=None, max_length=2000)
     scene_prompt: Optional[str] = Field(default=None, max_length=2000)
     identity_constraints: Optional[list[str]] = None
     reference_assets: Optional[list[SceneReferenceCreate]] = Field(default=None, max_length=8)
     postprocess_layers: Optional[list[str]] = None
     postprocess_config: Optional[PostprocessConfig] = None
+
+
+class ScenePromptReferenceRequest(BaseModel):
+    """根据商品事实生成可编辑的三段式分镜参考稿，不创建视频任务。"""
+
+    scene_no: int = Field(ge=1)
+    scene_type: SceneType
+    target_duration: float = Field(gt=0, le=5)
+    generation_strategy: GenerationStrategy = GenerationStrategy.image_to_video
+
+
+class ScenePromptReferenceResponse(BaseModel):
+    narration: str
+    visual_description: str
+    ai_prompt: str
 
 
 class CandidateTaskRequest(BaseModel):

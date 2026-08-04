@@ -12,10 +12,12 @@ DATABASE_PATH = Path(os.getenv("SHOP_DATABASE_PATH", DATA_DIR / "shop.db"))
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://localhost:8010").rstrip("/")
 # 可灵生成任务使用的商品素材 CDN 域名；与本地 API/成片访问地址 PUBLIC_BASE_URL 分离。
 KELING_ASSET_BASE_URL = os.getenv("KELING_ASSET_BASE_URL", "").rstrip("/")
-QINIU_ACCESS_KEY = os.getenv("QINIU_ACCESS_KEY", "")
-QINIU_SECRET_KEY = os.getenv("QINIU_SECRET_KEY", "")
-QINIU_BUCKET = os.getenv("QINIU_BUCKET", "")
-QINIU_KEY_PREFIX = os.getenv("QINIU_KEY_PREFIX", "products").strip("/")
+OSS_ACCESS_KEY_ID = os.getenv("OSS_ACCESS_KEY_ID", "")
+OSS_ACCESS_KEY_SECRET = os.getenv("OSS_ACCESS_KEY_SECRET", "")
+OSS_BUCKET = os.getenv("OSS_BUCKET", "")
+# 例如：https://oss-cn-shenzhen.aliyuncs.com。它用于服务端上传，不是图片公网地址。
+OSS_ENDPOINT = os.getenv("OSS_ENDPOINT", "").rstrip("/")
+OSS_KEY_PREFIX = os.getenv("OSS_KEY_PREFIX", "products").strip("/")
 KELING_API_BASE = os.getenv("KELING_API_BASE", "https://api-beijing.klingai.com").rstrip("/")
 KELING_IMAGE_TO_VIDEO_MODEL = os.getenv("KELING_IMAGE_TO_VIDEO_MODEL", "kling-v1-5")
 KELING_TEXT_TO_VIDEO_MODEL = os.getenv("KELING_TEXT_TO_VIDEO_MODEL", "kling-v1-5")
@@ -23,6 +25,10 @@ KELING_TEXT_TO_VIDEO_MODEL = os.getenv("KELING_TEXT_TO_VIDEO_MODEL", "kling-v1-5
 KELING_REFERENCE_IMAGES_FIELD = os.getenv("KELING_REFERENCE_IMAGES_FIELD", "")
 # 可灵/网关支持幂等请求时使用的请求头；留空可关闭该头（不建议）。
 KELING_IDEMPOTENCY_HEADER = os.getenv("KELING_IDEMPOTENCY_HEADER", "Idempotency-Key").strip()
+# 分镜参考稿使用与 OpenAI 兼容的文本模型；默认适配 DeepSeek，未配置时不影响手工编辑分镜。
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
+DEEPSEEK_API_BASE = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com").rstrip("/")
+DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
 MAX_PROVIDER_PARALLEL = max(1, int(os.getenv("MAX_PROVIDER_PARALLEL", "1")))
 # 应用内调度器会原子认领队列任务并提交给可灵。多进程部署时依靠 SQLite 认领保证同一任务只会被一个 Worker 持有。
 GENERATION_WORKER_ENABLED = os.getenv("GENERATION_WORKER_ENABLED", "true").lower() not in {"0", "false", "no"}

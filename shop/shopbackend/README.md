@@ -31,7 +31,9 @@ $env:FFMPEG_FONT_FILE = "C:\\Windows\\Fonts\\msyh.ttc"
 uvicorn main:app --reload --port 8010
 ```
 
-`PUBLIC_BASE_URL` 用于本地 API、静态预览和成片 URL，可在本地调试时使用 `http://localhost:8010`。商品素材通过 `/assets/upload` 上传后会自动进入七牛云 Kodo；可灵只会拉取 `KELING_ASSET_BASE_URL`（七牛云自定义 CDN HTTPS 域名）下的商品图。需配置 `QINIU_ACCESS_KEY`、`QINIU_SECRET_KEY`、`QINIU_BUCKET` 与 `KELING_ASSET_BASE_URL`。
+`PUBLIC_BASE_URL` 用于本地 API、静态预览和成片 URL，可在本地调试时使用 `http://localhost:8010`。商品素材通过 `/assets/upload` 上传后会自动进入阿里云 OSS；可灵只会拉取 `KELING_ASSET_BASE_URL`（可公开读取的 OSS HTTPS 域名）下的商品图。需配置 `OSS_ACCESS_KEY_ID`、`OSS_ACCESS_KEY_SECRET`、`OSS_BUCKET`、`OSS_ENDPOINT` 与 `KELING_ASSET_BASE_URL`。
+
+分镜页的“AI 生成参考稿”可选接入 DeepSeek：配置 `DEEPSEEK_API_KEY`（可选 `DEEPSEEK_API_BASE`、`DEEPSEEK_MODEL`）后，会生成可编辑的 A-Roll 旁白、B-Roll 画面描述和可灵 Prompt；未配置不影响手工编辑和视频生成。
 
 P1 合成依赖 FFmpeg。生产环境应在镜像内安装 FFmpeg，并将 `FFMPEG_FONT_FILE` 配置为包含中文字符的字体文件。成片输出至 `data/outputs`，通过 `/outputs/{filename}` 提供访问。
 

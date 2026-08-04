@@ -2,7 +2,7 @@
 
 本文说明如何将 `shopbackend` 部署到一台新的 Windows 10 电脑，作为内部商品图生视频服务运行。
 
-> 适用范围：本服务可在内网供业务人员使用。`/assets/upload` 会将商品素材自动上传到七牛云 Kodo；可灵从七牛云自定义 CDN HTTPS 域名拉取素材，因此本机 API 无需对公网开放。
+> 适用范围：本服务可在内网供业务人员使用。`/assets/upload` 会将商品素材自动上传到阿里云 OSS；可灵从 OSS 公网 HTTPS 域名拉取素材，因此本机 API 无需对公网开放。
 
 ## 1. 部署前准备
 
@@ -64,16 +64,16 @@ pip install -r requirements.txt
 可灵创建图生视频时会从 `KELING_ASSET_BASE_URL` 下载商品主图。因此：
 
 - `PUBLIC_BASE_URL` 可为 `http://localhost:8010`，只用于本地 API、预览和本地成片 URL；
-- `KELING_ASSET_BASE_URL` 必须是可灵可访问的 **七牛云 CDN HTTPS** 地址；
-- 上传接口会将文件上传至七牛云，并登记：`{KELING_ASSET_BASE_URL}/products/<商品ID>/<文件名>`；
+- `KELING_ASSET_BASE_URL` 必须是可灵可访问的 **OSS 公网 HTTPS** 地址；
+- 上传接口会将文件上传至 OSS，并登记：`{KELING_ASSET_BASE_URL}/products/<商品ID>/<文件名>`；
 - 合成成片 URL 仍为：`{PUBLIC_BASE_URL}/outputs/<文件名>`。
 
 ### 3.2 推荐方案
 
-1. 创建七牛云 Kodo Bucket，并准备公开读取的自定义 CDN HTTPS 域名，例如 `https://assets.example.com`；
-2. 在七牛云控制台获取 Access Key、Secret Key、Bucket 名称；
-3. 将 CDN 域名填写到 `KELING_ASSET_BASE_URL`，并填写 `QINIU_ACCESS_KEY`、`QINIU_SECRET_KEY`、`QINIU_BUCKET`；
-4. 通过本项目的 `/api/products/{id}/assets/upload` 上传商品图，后端会先本地预检、再上传七牛云、最后复检 CDN URL；
+1. 创建公开读的阿里云 OSS Bucket，并准备可灵可访问的 HTTPS 地址，例如 `https://your-bucket.oss-cn-shenzhen.aliyuncs.com`；
+2. 在阿里云控制台获取 AccessKey ID、AccessKey Secret、Bucket 名称和 Endpoint；
+3. 将公网图片地址填写到 `KELING_ASSET_BASE_URL`，并填写 `OSS_ACCESS_KEY_ID`、`OSS_ACCESS_KEY_SECRET`、`OSS_BUCKET`、`OSS_ENDPOINT`；
+4. 通过本项目的 `/api/products/{id}/assets/upload` 上传商品图，后端会先本地预检、再上传 OSS、最后复检公网 URL；
 5. 本地 API 可以继续监听 `127.0.0.1:8010`，无需为可灵开放端口。
 
 ## 4. 配置运行环境
@@ -94,12 +94,13 @@ $env:KELING_IMAGE_TO_VIDEO_MODEL = "kling-v1-5"
 # 本地 API 和本地成片访问地址；本地调试可使用 localhost。
 $env:PUBLIC_BASE_URL = "http://localhost:8010"
 
-# 七牛云 Kodo：可灵只从此 CDN HTTPS 域名下载商品素材。
-$env:KELING_ASSET_BASE_URL = "https://assets.example.com"
-$env:QINIU_ACCESS_KEY = "替换为七牛云 Access Key"
-$env:QINIU_SECRET_KEY = "替换为七牛云 Secret Key"
-$env:QINIU_BUCKET = "替换为七牛云 Bucket 名称"
-$env:QINIU_KEY_PREFIX = "products"
+# 阿里云 OSS：可灵只从此公网 HTTPS 地址下载商品素材。
+$env:KELING_ASSET_BASE_URL = "https://your-bucket.oss-cn-shenzhen.aliyuncs.com"
+$env:OSS_ACCESS_KEY_ID = "替换为阿里云 AccessKey ID"
+$env:OSS_ACCESS_KEY_SECRET = "替换为阿里云 AccessKey Secret"
+$env:OSS_BUCKET = "your-bucket"
+$env:OSS_ENDPOINT = "https://oss-cn-shenzhen.aliyuncs.com"
+$env:OSS_KEY_PREFIX = "products"
 
 # 视频合成和规格预检。
 $env:FFMPEG_BINARY = "ffmpeg"

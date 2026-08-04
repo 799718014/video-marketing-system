@@ -15,9 +15,9 @@ export function AssetPanel({ op, prod }: Props) {
 
   function doSubmitAsset(event: FormEvent) {
     if (!product) return setNotice('请先创建或加载商品')
-    void submitAsset(event, run).then(() => {
-      setNotice(`已添加${assetTypes.find(([type]) => type === assetForm.asset_type)?.[1] ?? '商品资产'}。`)
-    })
+    void submitAsset(event, run)
+      .then(() => setNotice(`已添加${assetTypes.find(([type]) => type === assetForm.asset_type)?.[1] ?? '商品资产'}。`))
+      .catch(() => undefined)
   }
 
   return (

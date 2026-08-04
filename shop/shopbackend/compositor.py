@@ -30,7 +30,7 @@ class DeterministicCompositor:
     CANVAS_FPS = 30
 
     # 合成管线版本：修改模板逻辑时应递增，使旧缓存自然失效。
-    _CACHE_VERSION = "v1"
+    _CACHE_VERSION = "v3"
 
     @property
     def _cache_dir(self) -> Path:
@@ -141,13 +141,23 @@ class DeterministicCompositor:
                 )
                 current = next_label
 
+            # Some provider clips carry a full-range color flag.  libx264 then
+            # exposes the result as yuvj420p even when -pix_fmt yuv420p is set.
+            # Normalize the filter output and tag the encoded file as limited
+            # range so every scene can safely use concat demuxer stream-copy.
+            normalized_label = "normalized"
+            filter_steps.append(
+                f"[{current}]scale=out_range=tv,format=pix_fmts=yuv420p[{normalized_label}]"
+            )
+
             command = [FFMPEG_BINARY, "-y", "-i", str(video_file)]
             for image in input_files[1:]:
                 command.extend(["-loop", "1", "-i", str(image)])
             command.extend([
                 "-filter_complex", ";".join(filter_steps),
-                "-map", f"[{current}]", "-map", "0:a?",
-                "-c:v", "libx264", "-r", str(self.CANVAS_FPS), "-pix_fmt", "yuv420p", "-c:a", "aac",
+                "-map", f"[{normalized_label}]", "-map", "0:a?",
+                "-c:v", "libx264", "-r", str(self.CANVAS_FPS), "-pix_fmt", "yuv420p", "-color_range", "tv",
+                "-c:a", "aac",
                 "-t", str(target_duration), "-shortest", "-movflags", "+faststart", str(output_file),
             ])
             self._run_ffmpeg(command)
